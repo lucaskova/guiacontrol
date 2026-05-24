@@ -25,7 +25,7 @@ export const SITE_CONFIG = {
    *   - Em PROD (após deploy):   https://app.GuiaControl.com
    * Usada pelos botões "Entrar" e (opcionalmente) "Testar grátis".
    */
-  appUrl: 'http://localhost:8081',
+  appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://guiacontrol-app.vercel.app',
 
   /**
    * Se true, "Testar grátis" também abre o app (rota /login).
