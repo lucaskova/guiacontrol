@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: guiacontrol-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: APIBRASIL_BEARER_TOKEN
+        sync: false
+      - key: APIBRASIL_DEVICE_TOKEN
+        sync: false
+      - key: WHATSAPP_PROVIDER
+        value: apibrasil
+      - key: PUBLIC_CLIENT_BASE_URL
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
