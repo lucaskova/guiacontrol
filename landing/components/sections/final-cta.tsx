@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { ArrowRight, CalendarCheck, Sparkles } from 'lucide-react';
 import { ButtonLink } from '../ui/button';
 import { Reveal } from '../ui/reveal';
-import { demoHref, trialHref } from '@/lib/config';
+import { demoHref, loginHref, trialHref } from '@/lib/config';
 
 const particles = Array.from({ length: 18 });
 
@@ -87,6 +87,18 @@ export function FinalCta() {
         <Reveal delay={0.2}>
           <p className="mt-5 text-[12.5px] text-white/45">
             14 dias grátis · sem cartão de crédito · suporte humano em português
+          </p>
+        </Reveal>
+
+        <Reveal delay={0.25}>
+          <p className="mt-3 text-[13px] text-white/55">
+            Já tem conta?{' '}
+            <a
+              href={loginHref}
+              className="font-semibold text-white/85 underline-offset-4 hover:text-white hover:underline"
+            >
+              Entrar no app →
+            </a>
           </p>
         </Reveal>
       </div>

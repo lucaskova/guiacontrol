@@ -59,7 +59,6 @@ export function SiteNav() {
               href={loginHref}
               variant="ghost"
               size="sm"
-              className="hidden sm:inline-flex"
             >
               Entrar
             </ButtonLink>

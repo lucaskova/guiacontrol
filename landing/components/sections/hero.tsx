@@ -7,7 +7,7 @@ import { Button, ButtonLink } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { DashboardMockup } from '../mockup/dashboard-mockup';
 import { VideoModal } from '../video-modal';
-import { trialHref } from '@/lib/config';
+import { loginHref, trialHref } from '@/lib/config';
 
 const stats = [
   { value: '+12mil', label: 'Guias processadas' },
@@ -72,6 +72,21 @@ export function Hero() {
               <Play size={14} className="opacity-80" /> Ver demonstração
             </Button>
           </motion.div>
+
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.4 }}
+            className="mt-4 text-[13px] text-white/55"
+          >
+            Já tem conta?{' '}
+            <a
+              href={loginHref}
+              className="font-semibold text-white/85 underline-offset-4 hover:text-white hover:underline"
+            >
+              Entrar no app →
+            </a>
+          </motion.p>
 
           <motion.div
             initial={{ opacity: 0 }}
