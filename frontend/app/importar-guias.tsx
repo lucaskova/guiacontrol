@@ -222,6 +222,7 @@ export default function ImportarGuiasScreen() {
           pronto: row.pronto,
           ja_cadastrada: row.ja_cadastrada,
           cnpj_exibicao: row.cnpj_exibicao,
+          cnpj_novo: row.cnpj_novo,
           arquivo_repetido_lote: row.arquivo_repetido_lote,
           selected: Boolean(
             row.pronto && !row.arquivo_repetido_lote && !row.ja_cadastrada,
@@ -232,8 +233,23 @@ export default function ImportarGuiasScreen() {
       setGrupos(analise.data.grupos || []);
       setResumo(analise.data.resumo);
       setPhase('review');
-    } catch {
-      showToast('Erro na análise do lote', 'error');
+    } catch (e: any) {
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail || e?.message || 'erro desconhecido';
+      showToast(`Não foi possível analisar o lote (${status || 'sem resposta'}): ${detail}`, 'error');
+      // Fallback: mostra os itens do OCR e calcula um resumo client-side
+      // pra que o usuário ainda consiga preencher manualmente e confirmar.
+      setItems(ocrResults);
+      setResumo({
+        total: ocrResults.length,
+        prontos: 0,
+        duplicatas: 0,
+        sem_empresa: ocrResults.length,
+        ja_cadastradas: 0,
+        cnpjs_novos_unicos: 0,
+        analise_falhou: true,
+      });
+      setGrupos([]);
       setPhase('review');
     } finally {
       setProcessing(false);
@@ -477,6 +493,15 @@ export default function ImportarGuiasScreen() {
                   <SummaryChip label="Duplicatas" value={String(resumo.duplicatas)} color="#D97706" />
                   <SummaryChip label="Sem empresa" value={String(resumo.sem_empresa)} color="#DC2626" />
                 </View>
+                {resumo.analise_falhou && (
+                  <View style={[styles.infoBanner, { backgroundColor: '#FEF2F2', borderColor: '#FCA5A5' }]}>
+                    <Ionicons name="warning" size={20} color="#B91C1C" />
+                    <Text style={[styles.infoBannerText, { color: '#7F1D1D' }]}>
+                      A análise automática falhou, mas você pode preencher os campos manualmente
+                      abaixo e confirmar. Se persistir, recarregue a página e tente novamente.
+                    </Text>
+                  </View>
+                )}
                 {(resumo.ja_cadastradas > 0 || resumo.duplicatas > 0) && (
                   <View style={styles.infoBanner}>
                     <Ionicons name="information-circle" size={20} color="#1E40AF" />
@@ -570,13 +595,30 @@ export default function ImportarGuiasScreen() {
                 </TouchableOpacity>
                 <View style={{ flex: 1.2 }}>
                   <Text style={styles.cellTitle} numberOfLines={1}>
-                    {item.empresa_nome || '—'}
+                    {item.empresa_nome || item.filename || '—'}
                   </Text>
-                  {item.cnpj_exibicao ? (
-                    <Text style={styles.cnpjText}>CNPJ: {item.cnpj_exibicao}</Text>
-                  ) : item.cnpj ? (
-                    <Text style={styles.cnpjText}>CNPJ detectado (revise)</Text>
-                  ) : null}
+                  {(() => {
+                    const ocrVazio =
+                      !item.cnpj &&
+                      !item.valor &&
+                      !item.data_vencimento &&
+                      !item.codigo_barras &&
+                      !item.tipo_documento;
+                    if (ocrVazio && item.status !== 'error') {
+                      return (
+                        <Text style={styles.warnText}>
+                          Não conseguimos ler este arquivo automaticamente. Preencha manualmente.
+                        </Text>
+                      );
+                    }
+                    if (item.cnpj_exibicao) {
+                      return <Text style={styles.cnpjText}>CNPJ: {item.cnpj_exibicao}</Text>;
+                    }
+                    if (item.cnpj) {
+                      return <Text style={styles.cnpjText}>CNPJ detectado (revise)</Text>;
+                    }
+                    return null;
+                  })()}
                   {item.ja_cadastrada && item.empresa_nome && (
                     <Text style={styles.linkedText}>Empresa vinculada pela guia existente</Text>
                   )}
@@ -815,6 +857,7 @@ const styles = StyleSheet.create({
   },
   infoBannerText: { flex: 1, fontSize: 13, color: '#1E3A8A', lineHeight: 18 },
   cnpjText: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  warnText: { fontSize: 11, color: '#B45309', marginTop: 2, fontWeight: '600' },
   linkedText: { fontSize: 11, color: '#059669', marginTop: 2, fontWeight: '600' },
   groupCard: {
     backgroundColor: '#F0FDF4',
