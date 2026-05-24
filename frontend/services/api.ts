@@ -211,9 +211,15 @@ export const adminAPI = {
   me: () => api.get('/admin/me'),
   overview: () => api.get('/admin/overview'),
   listUsers: (params?: { search?: string }) => api.get('/admin/users', { params }),
+  createUser: (body: {
+    name: string;
+    email: string;
+    password: string;
+    telefone_admin?: string;
+  }) => api.post('/admin/users', body),
   patchUser: (
     userId: string,
-    body: { telefone_admin?: string | null; bloqueado?: boolean },
+    body: { telefone_admin?: string | null; bloqueado?: boolean; password?: string },
   ) => api.patch(`/admin/users/${userId}`, body),
   deleteUser: (userId: string) => api.delete(`/admin/users/${userId}`),
   impersonate: (userId: string) => api.post(`/admin/users/${userId}/impersonate`),

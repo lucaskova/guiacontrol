@@ -53,11 +53,75 @@ export default function AdminUsers() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Row | null>(null);
   const [phoneInput, setPhoneInput] = useState('');
+  const [resetPwdInput, setResetPwdInput] = useState('');
   const [waModal, setWaModal] = useState<Row | null>(null);
   const [waText, setWaText] = useState('Olá! Aqui é do GuiaControl, posso te ajudar?');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    telefone_admin: '',
+  });
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createdSummary, setCreatedSummary] = useState<{
+    name: string;
+    email: string;
+    password: string;
+  } | null>(null);
   const router = useRouter();
   const me = useAuthStore((s) => s.user);
   const loadUser = useAuthStore((s) => s.loadUser);
+
+  const generatePassword = useCallback(() => {
+    const alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = '';
+    for (let i = 0; i < 10; i += 1) {
+      s += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+    return s;
+  }, []);
+
+  const openCreate = () => {
+    setCreateForm({ name: '', email: '', password: generatePassword(), telefone_admin: '' });
+    setCreateError(null);
+    setCreatedSummary(null);
+    setCreateOpen(true);
+  };
+
+  const submitCreate = async () => {
+    setCreateError(null);
+    const name = createForm.name.trim();
+    const email = createForm.email.trim().toLowerCase();
+    const password = createForm.password;
+    if (!name) return setCreateError('Informe o nome do contador.');
+    if (!email || !email.includes('@')) return setCreateError('E-mail inválido.');
+    if (password.length < 6) return setCreateError('Senha precisa ter ao menos 6 caracteres.');
+    setCreateLoading(true);
+    try {
+      await adminAPI.createUser({
+        name,
+        email,
+        password,
+        telefone_admin: digitsOnly(createForm.telefone_admin) || undefined,
+      });
+      setCreatedSummary({ name, email, password });
+      await load();
+    } catch (e: any) {
+      setCreateError(e?.response?.data?.detail || 'Erro ao criar contador.');
+    } finally {
+      setCreateLoading(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (Platform.OS === 'web' && navigator?.clipboard) {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch {}
+  };
 
   const load = useCallback(async () => {
     try {
@@ -123,14 +187,24 @@ export default function AdminUsers() {
   const openEdit = (u: Row) => {
     setEditing(u);
     setPhoneInput(u.telefone_admin || '');
+    setResetPwdInput('');
   };
 
   const savePhone = async () => {
     if (!editing) return;
     try {
-      await adminAPI.patchUser(editing.user_id, { telefone_admin: phoneInput || '' });
+      const payload: any = { telefone_admin: phoneInput || '' };
+      if (resetPwdInput) {
+        if (resetPwdInput.length < 6) {
+          window.alert?.('Senha precisa ter ao menos 6 caracteres.');
+          return;
+        }
+        payload.password = resetPwdInput;
+      }
+      await adminAPI.patchUser(editing.user_id, payload);
       setEditing(null);
       setPhoneInput('');
+      setResetPwdInput('');
       await load();
     } catch (e: any) {
       window.alert?.(e?.response?.data?.detail || 'Erro ao salvar.');
@@ -159,21 +233,27 @@ export default function AdminUsers() {
     <View style={styles.container}>
       <View style={styles.headerBar}>
         <Text style={styles.h1}>Contadores</Text>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={14} color="#64748B" />
-          <TextInput
-            style={styles.searchInput}
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Buscar por nome ou e-mail"
-            placeholderTextColor="#94A3B8"
-            onSubmitEditing={load}
-          />
-          {search ? (
-            <Pressable onPress={() => { setSearch(''); }}>
-              <Ionicons name="close-circle" size={16} color="#94A3B8" />
-            </Pressable>
-          ) : null}
+        <View style={styles.headerActions}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={14} color="#64748B" />
+            <TextInput
+              style={styles.searchInput}
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Buscar por nome ou e-mail"
+              placeholderTextColor="#94A3B8"
+              onSubmitEditing={load}
+            />
+            {search ? (
+              <Pressable onPress={() => { setSearch(''); }}>
+                <Ionicons name="close-circle" size={16} color="#94A3B8" />
+              </Pressable>
+            ) : null}
+          </View>
+          <TouchableOpacity style={styles.createBtn} onPress={openCreate}>
+            <Ionicons name="person-add" size={14} color="#FFFFFF" />
+            <Text style={styles.createBtnTxt}>Criar contador</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -275,6 +355,32 @@ export default function AdminUsers() {
                 Já temos {editing.whatsapp_telefone} do setup do WhatsApp dele. Você pode salvar um número alternativo.
               </Text>
             ) : null}
+
+            <View style={{ height: 1, backgroundColor: '#E2E8F0', marginVertical: 14 }} />
+            <Text style={styles.label}>Redefinir senha (opcional)</Text>
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                value={resetPwdInput}
+                onChangeText={setResetPwdInput}
+                placeholder="Deixe em branco pra não trocar"
+                placeholderTextColor="#94A3B8"
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                style={styles.sideBtn}
+                onPress={() => setResetPwdInput(generatePassword())}
+              >
+                <Ionicons name="refresh" size={14} color="#0F766E" />
+                <Text style={styles.sideBtnTxt}>Gerar</Text>
+              </TouchableOpacity>
+            </View>
+            {resetPwdInput ? (
+              <Text style={styles.hint}>
+                Ao salvar, a senha do contador é trocada e todas as sessões dele são encerradas.
+              </Text>
+            ) : null}
+
             <View style={styles.sheetActions}>
               <TouchableOpacity style={styles.btnGhost} onPress={() => setEditing(null)}>
                 <Text style={styles.btnGhostTxt}>Cancelar</Text>
@@ -283,6 +389,144 @@ export default function AdminUsers() {
                 <Text style={styles.btnPrimaryTxt}>Salvar</Text>
               </TouchableOpacity>
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Create contador modal */}
+      <Modal transparent visible={createOpen} animationType="fade" onRequestClose={() => setCreateOpen(false)}>
+        <Pressable style={styles.overlay} onPress={() => setCreateOpen(false)}>
+          <Pressable style={[styles.sheet, { maxWidth: 520 }]} onPress={(e) => e.stopPropagation()}>
+            {createdSummary ? (
+              <>
+                <View style={styles.successHeader}>
+                  <View style={styles.successIcon}>
+                    <Ionicons name="checkmark" size={20} color="#FFFFFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sheetTitle}>Contador criado!</Text>
+                    <Text style={styles.sheetSub}>
+                      Compartilhe os dados de acesso abaixo com {createdSummary.name}.
+                    </Text>
+                  </View>
+                </View>
+
+                <Field label="Nome" value={createdSummary.name} onCopy={copyToClipboard} />
+                <Field label="E-mail (login)" value={createdSummary.email} onCopy={copyToClipboard} />
+                <Field
+                  label="Senha"
+                  value={createdSummary.password}
+                  monospace
+                  onCopy={copyToClipboard}
+                />
+
+                <Text style={styles.hint}>
+                  Anote ou copie esses dados agora — por segurança, não conseguimos mostrar a senha
+                  novamente depois. Caso perca, é só editar o contador e gerar uma nova.
+                </Text>
+
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity
+                    style={styles.btnGhost}
+                    onPress={() => {
+                      setCreatedSummary(null);
+                      openCreate();
+                    }}
+                  >
+                    <Text style={styles.btnGhostTxt}>Criar outro</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.btnPrimary}
+                    onPress={() => {
+                      setCreateOpen(false);
+                      setCreatedSummary(null);
+                    }}
+                  >
+                    <Text style={styles.btnPrimaryTxt}>Concluir</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.sheetTitle}>Criar contador</Text>
+                <Text style={styles.sheetSub}>
+                  Defina o login e a senha que o contador usará para entrar no app.
+                </Text>
+
+                <Text style={styles.label}>Nome completo</Text>
+                <TextInput
+                  style={styles.input}
+                  value={createForm.name}
+                  onChangeText={(t) => setCreateForm({ ...createForm, name: t })}
+                  placeholder="Ex.: João Silva"
+                  placeholderTextColor="#94A3B8"
+                />
+
+                <Text style={styles.label}>E-mail (será o login)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={createForm.email}
+                  onChangeText={(t) => setCreateForm({ ...createForm, email: t })}
+                  placeholder="contador@empresa.com.br"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+
+                <Text style={styles.label}>Senha provisória</Text>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={createForm.password}
+                    onChangeText={(t) => setCreateForm({ ...createForm, password: t })}
+                    placeholder="Mínimo 6 caracteres"
+                    placeholderTextColor="#94A3B8"
+                    autoCapitalize="none"
+                  />
+                  <TouchableOpacity
+                    style={styles.sideBtn}
+                    onPress={() => setCreateForm({ ...createForm, password: generatePassword() })}
+                  >
+                    <Ionicons name="refresh" size={14} color="#0F766E" />
+                    <Text style={styles.sideBtnTxt}>Gerar</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.label}>WhatsApp (opcional)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={createForm.telefone_admin}
+                  onChangeText={(t) => setCreateForm({ ...createForm, telefone_admin: t })}
+                  placeholder="55..."
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="phone-pad"
+                />
+
+                {createError ? <Text style={styles.errorMsg}>{createError}</Text> : null}
+
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity
+                    style={styles.btnGhost}
+                    onPress={() => setCreateOpen(false)}
+                    disabled={createLoading}
+                  >
+                    <Text style={styles.btnGhostTxt}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.btnPrimary, createLoading && { opacity: 0.6 }]}
+                    onPress={submitCreate}
+                    disabled={createLoading}
+                  >
+                    {createLoading ? (
+                      <ActivityIndicator color="#FFFFFF" />
+                    ) : (
+                      <Ionicons name="person-add" size={14} color="#FFFFFF" />
+                    )}
+                    <Text style={styles.btnPrimaryTxt}>Criar contador</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -314,6 +558,47 @@ export default function AdminUsers() {
           </Pressable>
         </Pressable>
       </Modal>
+    </View>
+  );
+}
+
+function Field({
+  label,
+  value,
+  monospace,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  monospace?: boolean;
+  onCopy: (v: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await onCopy(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <View style={fieldStyles.wrap}>
+      <Text style={fieldStyles.lbl}>{label}</Text>
+      <View style={fieldStyles.row}>
+        <Text
+          style={[
+            fieldStyles.val,
+            monospace ? { fontFamily: Platform.select({ web: 'monospace', default: 'Courier' }) as any } : null,
+          ]}
+          selectable
+        >
+          {value}
+        </Text>
+        <Pressable onPress={handleCopy} style={fieldStyles.copyBtn}>
+          <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={13} color={copied ? '#10B981' : '#0F766E'} />
+          <Text style={[fieldStyles.copyTxt, copied && { color: '#10B981' }]}>
+            {copied ? 'copiado' : 'copiar'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -474,6 +759,72 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   btnPrimaryTxt: { color: '#FFFFFF', fontWeight: '800' },
+
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  createBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0F766E',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 999,
+  },
+  createBtnTxt: { color: '#FFFFFF', fontWeight: '800', fontSize: 12.5 },
+  sideBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#0F766E40',
+    backgroundColor: '#ECFDF5',
+  },
+  sideBtnTxt: { color: '#0F766E', fontWeight: '700', fontSize: 12 },
+  errorMsg: {
+    backgroundColor: '#FEF2F2',
+    color: '#991B1B',
+    padding: 10,
+    borderRadius: 8,
+    fontSize: 12.5,
+    fontWeight: '600',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginTop: 6,
+  },
+  successHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 },
+  successIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    backgroundColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
+
+const fieldStyles = StyleSheet.create({
+  wrap: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    marginTop: 8,
+  },
+  lbl: {
+    fontSize: 10.5,
+    color: '#64748B',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4 },
+  val: { color: '#0F172A', fontSize: 14, fontWeight: '700', flex: 1 },
+  copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4 },
+  copyTxt: { color: '#0F766E', fontSize: 11.5, fontWeight: '700' },
 });
 
 const metaStyles = StyleSheet.create({

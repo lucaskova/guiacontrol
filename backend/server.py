@@ -3490,6 +3490,66 @@ async def admin_users(
 class AdminUserPatch(BaseModel):
     telefone_admin: Optional[str] = None
     bloqueado: Optional[bool] = None
+    password: Optional[str] = None
+
+
+class AdminUserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    telefone_admin: Optional[str] = None
+
+
+@admin_router.post("/users")
+async def admin_user_create(
+    body: AdminUserCreate,
+    admin: dict = _AdminDepends(require_admin),
+):
+    """Cria um contador manualmente (login + senha definidos pelo admin)."""
+    name = (body.name or "").strip()
+    email_norm = (body.email or "").strip().lower()
+    password = body.password or ""
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome é obrigatório")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Senha precisa ter ao menos 6 caracteres")
+    if await db.users.find_one({"email": email_norm}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="Este e-mail já está cadastrado")
+
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("ascii")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    telefone_admin = re.sub(r"\D", "", body.telefone_admin or "") or None
+    user_doc = {
+        "user_id": user_id,
+        "email": email_norm,
+        "name": name,
+        "picture": None,
+        "password_hash": password_hash,
+        "created_at": datetime.now(timezone.utc),
+        "created_by_admin": admin.get("user_id"),
+    }
+    if telefone_admin:
+        user_doc["telefone_admin"] = telefone_admin
+    await db.users.insert_one(user_doc)
+    await registrar_log(
+        admin["user_id"],
+        "admin_create_user",
+        "user",
+        user_id,
+        {"email": email_norm, "name": name, "phone": telefone_admin or ""},
+    )
+    return {
+        "ok": True,
+        "user": {
+            "user_id": user_id,
+            "email": email_norm,
+            "name": name,
+            "telefone": telefone_admin,
+        },
+    }
 
 
 @admin_router.patch("/users/{user_id}")
@@ -3503,6 +3563,12 @@ async def admin_user_patch(
         update["telefone_admin"] = re.sub(r"\D", "", body.telefone_admin or "") or None
     if body.bloqueado is not None:
         update["bloqueado"] = bool(body.bloqueado)
+    if body.password is not None:
+        if len(body.password) < 6:
+            raise HTTPException(status_code=400, detail="Senha precisa ter ao menos 6 caracteres")
+        update["password_hash"] = bcrypt.hashpw(
+            body.password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+        ).decode("ascii")
     if not update:
         raise HTTPException(status_code=400, detail="Nada para atualizar")
     update["updated_at"] = datetime.now(timezone.utc)
@@ -3511,8 +3577,8 @@ async def admin_user_patch(
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    # Se acabou de bloquear, mata todas as sessões ativas
-    if update.get("bloqueado") is True:
+    # Se bloqueou OU resetou senha, encerra todas as sessões ativas
+    if update.get("bloqueado") is True or "password_hash" in update:
         await db.user_sessions.delete_many({"user_id": user_id})
 
     await registrar_log(
@@ -3520,7 +3586,13 @@ async def admin_user_patch(
         "admin_update_user",
         "user",
         user_id,
-        {"changes": {k: v for k, v in update.items() if k != "updated_at"}},
+        {
+            "changes": {
+                k: ("***" if k == "password_hash" else v)
+                for k, v in update.items()
+                if k != "updated_at"
+            }
+        },
     )
     return {"ok": True}
 
