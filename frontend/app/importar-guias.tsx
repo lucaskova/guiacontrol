@@ -54,6 +54,7 @@ type LoteItem = {
   pronto?: boolean;
   ja_cadastrada?: boolean;
   cnpj_exibicao?: string;
+  cnpj_novo?: boolean;
   arquivo_repetido_lote?: boolean;
   selected: boolean;
   ignorar_duplicidade: boolean;
@@ -85,6 +86,8 @@ export default function ImportarGuiasScreen() {
   const [confirming, setConfirming] = useState(false);
   const [enviarNotificacoes, setEnviarNotificacoes] = useState(true);
   const [resultado, setResultado] = useState<any>(null);
+  const [creatingCnpjs, setCreatingCnpjs] = useState<Set<string>>(new Set());
+  const [creatingAll, setCreatingAll] = useState(false);
 
   const progressPct = useMemo(() => {
     if (!items.length) return 0;
@@ -246,6 +249,117 @@ export default function ImportarGuiasScreen() {
   const recalcPronto = (it: LoteItem) =>
     Boolean(it.empresa_id && it.valor && (it.data_vencimento_iso || it.data_vencimento));
 
+  const onlyDigits = (v?: string | null) => (v || '').replace(/\D/g, '');
+
+  // CNPJs únicos detectados pelo OCR que ainda não estão cadastrados
+  const cnpjsNovosUnicos = useMemo(() => {
+    const map = new Map<string, { cnpj: string; cnpj_exibicao?: string; count: number }>();
+    items.forEach((i) => {
+      if (!i.cnpj_novo || !i.cnpj) return;
+      const key = onlyDigits(i.cnpj);
+      if (!key) return;
+      const cur = map.get(key);
+      if (cur) cur.count += 1;
+      else map.set(key, { cnpj: i.cnpj, cnpj_exibicao: i.cnpj_exibicao, count: 1 });
+    });
+    return Array.from(map.values());
+  }, [items]);
+
+  const aplicarEmpresaNasLinhasDoCnpj = (cnpjDigits: string, empresa: any) => {
+    setItems((prev) =>
+      prev.map((row) => {
+        if (onlyDigits(row.cnpj) !== cnpjDigits) return row;
+        const updated: LoteItem = {
+          ...row,
+          empresa_id: empresa.empresa_id,
+          empresa_nome: empresa.nome_fantasia || empresa.razao_social,
+          match_confianca: 'alta',
+          cnpj_novo: false,
+          steps: { ...row.steps, empresa: true },
+        };
+        updated.pronto = recalcPronto(updated);
+        if (updated.pronto && !updated.tem_duplicidade && !updated.arquivo_repetido_lote) {
+          updated.selected = true;
+        }
+        return updated;
+      }),
+    );
+  };
+
+  const cadastrarEmpresaPorCnpj = useCallback(
+    async (cnpjBruto: string): Promise<{ ok: boolean; empresa?: any; erro?: string }> => {
+      const digits = onlyDigits(cnpjBruto);
+      if (digits.length !== 14) {
+        return { ok: false, erro: 'CNPJ inválido' };
+      }
+      setCreatingCnpjs((prev) => new Set(prev).add(digits));
+      try {
+        const res = await empresasAPI.criar({ cnpj: digits });
+        const emp = res.data;
+        setEmpresas((prev) => {
+          if (prev.some((e) => e.empresa_id === emp.empresa_id)) return prev;
+          return [...prev, emp];
+        });
+        aplicarEmpresaNasLinhasDoCnpj(digits, emp);
+        return { ok: true, empresa: emp };
+      } catch (e: any) {
+        // Se já existia (erro 400 "Empresa já cadastrada"), tenta achar pela lista atualizada
+        const detail: string = e?.response?.data?.detail || '';
+        if (e?.response?.status === 400 && /j[aá] cadastrada/i.test(detail)) {
+          try {
+            const lista = await empresasAPI.listar();
+            const arr = lista.data || [];
+            setEmpresas(arr);
+            const found = arr.find((x: any) => onlyDigits(x.cnpj) === digits);
+            if (found) {
+              aplicarEmpresaNasLinhasDoCnpj(digits, found);
+              return { ok: true, empresa: found };
+            }
+          } catch {}
+        }
+        return { ok: false, erro: detail || 'Erro ao cadastrar empresa' };
+      } finally {
+        setCreatingCnpjs((prev) => {
+          const n = new Set(prev);
+          n.delete(digits);
+          return n;
+        });
+      }
+    },
+    [],
+  );
+
+  const handleCadastrarUmCnpj = async (cnpj: string) => {
+    const r = await cadastrarEmpresaPorCnpj(cnpj);
+    if (r.ok && r.empresa) {
+      const nome = r.empresa.nome_fantasia || r.empresa.razao_social || 'Empresa';
+      showToast(`${nome} cadastrada e vinculada`, 'success');
+    } else {
+      showToast(r.erro || 'Não foi possível cadastrar a empresa', 'error');
+    }
+  };
+
+  const handleCadastrarTodasEmpresasNovas = async () => {
+    if (!cnpjsNovosUnicos.length) return;
+    setCreatingAll(true);
+    try {
+      const results = await Promise.all(
+        cnpjsNovosUnicos.map((c) => cadastrarEmpresaPorCnpj(c.cnpj)),
+      );
+      const ok = results.filter((r) => r.ok).length;
+      const fail = results.length - ok;
+      if (ok && !fail) {
+        showToast(`${ok} empresa(s) cadastrada(s) e vinculada(s)`, 'success');
+      } else if (ok && fail) {
+        showToast(`${ok} cadastrada(s), ${fail} falharam`, 'info');
+      } else {
+        showToast('Não foi possível cadastrar as empresas novas', 'error');
+      }
+    } finally {
+      setCreatingAll(false);
+    }
+  };
+
   const handleConfirm = async () => {
     const toSend = items.filter((i) => i.selected && recalcPronto(i));
     if (!toSend.length) {
@@ -376,6 +490,41 @@ export default function ImportarGuiasScreen() {
               </>
             )}
 
+            {cnpjsNovosUnicos.length > 0 && (
+              <View style={styles.cnpjBanner}>
+                <View style={styles.cnpjBannerIcon}>
+                  <Ionicons name="sparkles" size={20} color="#047857" />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.cnpjBannerTitle}>
+                    {cnpjsNovosUnicos.length === 1
+                      ? '1 empresa nova detectada'
+                      : `${cnpjsNovosUnicos.length} empresas novas detectadas`}
+                  </Text>
+                  <Text style={styles.cnpjBannerSub}>
+                    O OCR identificou {cnpjsNovosUnicos.length === 1 ? 'um CNPJ válido' : 'CNPJs válidos'} que ainda não está
+                    {cnpjsNovosUnicos.length === 1 ? '' : 'ão'} na sua base. Cadastre em 1 clique — os dados (razão social, nome fantasia) vêm da Receita.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.cnpjBannerBtn, creatingAll && { opacity: 0.6 }]}
+                  onPress={handleCadastrarTodasEmpresasNovas}
+                  disabled={creatingAll}
+                >
+                  {creatingAll ? (
+                    <ActivityIndicator color="#FFF" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="add-circle" size={16} color="#FFF" />
+                      <Text style={styles.cnpjBannerBtnText}>
+                        {cnpjsNovosUnicos.length === 1 ? 'Cadastrar' : 'Cadastrar todas'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
             {grupos.length > 0 && (
               <View style={styles.groupCard}>
                 <Text style={styles.groupTitle}>Agrupamento automático</Text>
@@ -436,6 +585,26 @@ export default function ImportarGuiasScreen() {
                       {item.alertas_duplicidade?.[0] || 'Possível duplicada'}
                     </Text>
                   )}
+                  {!item.empresa_id && item.cnpj_novo && item.cnpj && (() => {
+                    const digits = onlyDigits(item.cnpj);
+                    const loading = creatingCnpjs.has(digits);
+                    return (
+                      <TouchableOpacity
+                        style={[styles.addEmpBtn, loading && { opacity: 0.6 }]}
+                        onPress={() => handleCadastrarUmCnpj(item.cnpj!)}
+                        disabled={loading || creatingAll}
+                      >
+                        {loading ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <>
+                            <Ionicons name="add-circle" size={14} color="#FFF" />
+                            <Text style={styles.addEmpBtnText}>Cadastrar empresa pelo CNPJ</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })()}
                   {!item.empresa_id && empresas.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       {empresas.slice(0, 5).map((e) => (
@@ -709,6 +878,49 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   empChipText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
+  cnpjBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#ECFDF5',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+  },
+  cnpjBannerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#D1FAE5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cnpjBannerTitle: { fontWeight: '800', color: '#065F46', fontSize: 14 },
+  cnpjBannerSub: { fontSize: 12, color: '#047857', marginTop: 2, lineHeight: 16 },
+  cnpjBannerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#059669',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  cnpjBannerBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
+  addEmpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: '#059669',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 6,
+  },
+  addEmpBtnText: { color: '#FFF', fontWeight: '700', fontSize: 11 },
   ignoreDup: { width: '100%', marginTop: 4 },
   ignoreDupText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
   confirmBtn: {

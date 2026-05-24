@@ -1598,6 +1598,14 @@ def analisar_itens_lote(
 
         item["tem_duplicidade"] = len(item["alertas_duplicidade"]) > 0
 
+        # CNPJ válido extraído pelo OCR mas que NÃO bate com nenhuma empresa
+        # cadastrada do usuário: pode ser cadastrado em 1 clique no frontend.
+        item["cnpj_novo"] = bool(
+            not item.get("empresa_id")
+            and cnpj
+            and validar_cnpj(cnpj)
+        )
+
         item["pronto"] = bool(
 
             item.get("empresa_id")
@@ -1631,6 +1639,14 @@ def analisar_itens_lote(
             "sem_empresa": sum(1 for i in processados if not i.get("empresa_id")),
 
             "ja_cadastradas": sum(1 for i in processados if i.get("ja_cadastrada")),
+
+            "cnpjs_novos_unicos": len(
+                {
+                    limpar_cnpj(i.get("cnpj"))
+                    for i in processados
+                    if i.get("cnpj_novo")
+                }
+            ),
 
         },
 
