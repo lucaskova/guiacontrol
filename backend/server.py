@@ -131,7 +131,10 @@ def _cors_allow_origins() -> list[str]:
 
 def _cors_allow_origin_regex() -> Optional[str]:
     """
-    Permite Expo web em outra porta, IPv6 ::1 ou IP da rede local (ex.: http://192.168.0.10:8081).
+    Origens automaticamente permitidas:
+    - localhost / 127.0.0.1 / IPs da rede local (dev)
+    - Qualquer subdomínio *.vercel.app (produção do app e da landing)
+    - Qualquer subdomínio *.onrender.com (preview)
     Desative com CORS_DISABLE_DEV_REGEX=1 em produção estrita (use só CORS_ALLOW_ORIGINS).
     """
     if os.getenv("CORS_DISABLE_DEV_REGEX", "").lower() in ("1", "true", "yes"):
@@ -145,6 +148,8 @@ def _cors_allow_origin_regex() -> Optional[str]:
         r"|192\.168\.\d{1,3}\.\d{1,3}"
         r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
         r"|172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}"
+        r"|([a-zA-Z0-9-]+\.)*vercel\.app"
+        r"|([a-zA-Z0-9-]+\.)*onrender\.com"
         r")(:\d+)?$"
     )
 
