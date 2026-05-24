@@ -1011,6 +1011,74 @@ def normalizar_data_iso(data: Optional[str]) -> Optional[str]:
 
 
 
+def _safe_float(v) -> float:
+
+    """Converte valor numérico do Mongo/OCR sem quebrar a análise do lote."""
+
+    if v is None:
+
+        return 0.0
+
+    try:
+
+        if hasattr(v, "to_decimal"):
+
+            return float(v.to_decimal())
+
+        f = float(v)
+
+        if f != f:
+
+            return 0.0
+
+        return f
+
+    except (TypeError, ValueError):
+
+        return 0.0
+
+
+
+
+
+def extrair_hints_filename(filename: Optional[str]) -> dict[str, str]:
+
+    """Quando o OCR vem vazio, usa o nome do arquivo como pista (tipo, competência)."""
+
+    if not filename:
+
+        return {}
+
+    base = filename.rsplit(".", 1)[0].upper()
+
+    hints: dict[str, str] = {}
+
+    for tipo in ("ICMS", "DAS", "DARF", "ISS", "INSS", "FGTS", "GPS", "GRU", "GARE", "DAE"):
+
+        if tipo in base:
+
+            hints["tipo_documento"] = tipo
+
+            break
+
+    if "PARCELAMENTO" in base:
+
+        hints["tipo_documento"] = hints.get("tipo_documento", "OUTROS")
+
+        hints["descricao_sugerida"] = "Parcelamento"
+
+    comp = re.search(r"\b(\d{2})[\./](\d{4})\b", base)
+
+    if comp:
+
+        hints["competencia"] = f"{comp.group(1)}/{comp.group(2)}"
+
+    return hints
+
+
+
+
+
 def hash_arquivo_base64(data_url: str) -> str:
 
     payload = data_url.split(",", 1)[-1] if "," in data_url else data_url
@@ -1331,7 +1399,7 @@ def detectar_duplicidade(
 
             g.get("tipo", ""),
 
-            float(g.get("valor") or 0),
+            _safe_float(g.get("valor")),
 
             g.get("data_vencimento"),
 
@@ -1466,6 +1534,14 @@ def analisar_itens_lote(
     for raw in itens:
 
         item = dict(raw)
+
+        hints = extrair_hints_filename(item.get("filename"))
+
+        for key, val in hints.items():
+
+            if val and not item.get(key):
+
+                item[key] = val
 
         texto = item.get("texto_completo") or ""
 

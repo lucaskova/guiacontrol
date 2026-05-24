@@ -1668,14 +1668,50 @@ async def ocr_lote_analisar(
     authorization: Optional[str] = Header(None),
 ):
     """Match empresa, duplicidade e agrupamento após OCR de cada arquivo."""
-    user = await get_current_user(session_token, authorization)
-    if not body.itens:
-        raise HTTPException(status_code=400, detail="Nenhum item no lote")
+    try:
+        user = await get_current_user(session_token, authorization)
+        if not body.itens:
+            raise HTTPException(status_code=400, detail="Nenhum item no lote")
 
-    empresas = await db.empresas.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(5000)
-    guias_db = await db.guias.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(10000)
-    itens_raw = [i.dict() for i in body.itens]
-    return analisar_itens_lote(itens_raw, empresas, guias_db)
+        emp_proj = {
+            "_id": 0,
+            "empresa_id": 1,
+            "cnpj": 1,
+            "nome_fantasia": 1,
+            "razao_social": 1,
+        }
+        guia_proj = {
+            "_id": 0,
+            "guia_id": 1,
+            "empresa_id": 1,
+            "tipo": 1,
+            "valor": 1,
+            "data_vencimento": 1,
+            "codigo_barras": 1,
+            "competencia": 1,
+        }
+        empresas = await db.empresas.find(
+            {"user_id": user["user_id"]}, emp_proj
+        ).to_list(5000)
+        guias_db = await db.guias.find(
+            {"user_id": user["user_id"]}, guia_proj
+        ).to_list(10000)
+
+        itens_raw = [i.model_dump() for i in body.itens]
+        for item in itens_raw:
+            texto = item.get("texto_completo") or ""
+            if len(texto) > 20000:
+                item["texto_completo"] = texto[:20000]
+
+        return analisar_itens_lote(itens_raw, empresas, guias_db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Erro em ocr_lote_analisar")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao analisar lote: {str(e)}",
+        )
 
 
 @api_router.post("/ocr/lote/hash")

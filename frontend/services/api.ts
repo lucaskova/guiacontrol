@@ -195,7 +195,7 @@ export const ocrAPI = {
   processar: (imageBase64: string) =>
     api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 120000 }),
   loteAnalisar: (itens: unknown[]) =>
-    api.post('/ocr/lote/analisar', { itens }, { timeout: 60000 }),
+    api.post('/ocr/lote/analisar', { itens }, { timeout: 120000 }),
   loteHash: (imageBase64: string) =>
     api.post('/ocr/lote/hash', { image_base64: imageBase64 }),
 };

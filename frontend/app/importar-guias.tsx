@@ -74,6 +74,138 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function onlyDigits(v?: string | null) {
+  return (v || '').replace(/\D/g, '');
+}
+
+function formatCnpj(digits: string) {
+  if (digits.length !== 14) return undefined;
+  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`;
+}
+
+function validarCnpj(cnpj: string): boolean {
+  const c = onlyDigits(cnpj);
+  if (c.length !== 14 || c === c[0].repeat(14)) return false;
+  const calc = (nums: string, pesos: number[]) => {
+    const s = nums.split('').reduce((acc, n, i) => acc + Number(n) * pesos[i], 0);
+    const r = s % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  const p1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const p2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  if (calc(c.slice(0, 12), p1) !== Number(c[12])) return false;
+  if (calc(c.slice(0, 13), p2) !== Number(c[13])) return false;
+  return true;
+}
+
+function hintsFromFilename(filename?: string) {
+  if (!filename) return {} as Record<string, string>;
+  const base = filename.replace(/\.[^.]+$/, '').toUpperCase();
+  const hints: Record<string, string> = {};
+  for (const tipo of ['ICMS', 'DAS', 'DARF', 'ISS', 'INSS', 'FGTS', 'GPS', 'GRU', 'GARE', 'DAE']) {
+    if (base.includes(tipo)) {
+      hints.tipo_documento = tipo;
+      break;
+    }
+  }
+  if (base.includes('PARCELAMENTO')) {
+    hints.descricao_sugerida = 'Parcelamento';
+  }
+  const comp = base.match(/\b(\d{2})[\./](\d{4})\b/);
+  if (comp) hints.competencia = `${comp[1]}/${comp[2]}`;
+  return hints;
+}
+
+function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
+  const processados = items.map((item) => {
+    const hints = hintsFromFilename(item.filename);
+    const tipo = item.tipo || item.tipo_documento || hints.tipo_documento || 'OUTROS';
+    const competencia = item.competencia || hints.competencia;
+    const cnpjDigits = onlyDigits(item.cnpj);
+    let empresa_id = item.empresa_id;
+    let empresa_nome = item.empresa_nome;
+    let match_confianca = item.match_confianca || 'nenhuma';
+
+    if (cnpjDigits.length === 14) {
+      const emp = empresasList.find((e) => onlyDigits(e.cnpj) === cnpjDigits);
+      if (emp) {
+        empresa_id = emp.empresa_id;
+        empresa_nome = emp.nome_fantasia || emp.razao_social;
+        match_confianca = 'alta';
+      }
+    }
+
+  const updated: LoteItem = {
+      ...item,
+      tipo,
+      competencia,
+      descricao_sugerida: item.descricao_sugerida || hints.descricao_sugerida,
+      tipo_documento: item.tipo_documento || hints.tipo_documento,
+      empresa_id,
+      empresa_nome,
+      match_confianca,
+      cnpj_exibicao: formatCnpj(cnpjDigits),
+      cnpj_novo: Boolean(!empresa_id && cnpjDigits.length === 14 && validarCnpj(cnpjDigits)),
+      alertas_duplicidade: item.alertas_duplicidade || [],
+      tem_duplicidade: item.tem_duplicidade || false,
+      ja_cadastrada: item.ja_cadastrada || false,
+      steps: {
+        ...item.steps,
+        empresa: Boolean(empresa_id),
+        tipo: Boolean(tipo && tipo !== 'OUTROS'),
+      },
+    };
+    updated.pronto = Boolean(
+      updated.empresa_id && updated.valor && (updated.data_vencimento_iso || updated.data_vencimento),
+    );
+    updated.selected = Boolean(
+      updated.pronto && !updated.arquivo_repetido_lote && !updated.ja_cadastrada,
+    );
+    return updated;
+  });
+
+  const cnpjsNovos = new Set(
+    processados.filter((i) => i.cnpj_novo && i.cnpj).map((i) => onlyDigits(i.cnpj)),
+  );
+
+  return {
+    itens: processados,
+    grupos: [] as any[],
+    resumo: {
+      total: processados.length,
+      prontos: processados.filter((i) => i.pronto).length,
+      duplicatas: processados.filter((i) => i.tem_duplicidade).length,
+      sem_empresa: processados.filter((i) => !i.empresa_id).length,
+      ja_cadastradas: processados.filter((i) => i.ja_cadastrada).length,
+      cnpjs_novos_unicos: cnpjsNovos.size,
+      analise_fallback: true,
+    },
+  };
+}
+
+async function loteAnalisarComRetry(payload: unknown[], retries = 2) {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await ocrAPI.loteAnalisar(payload);
+    } catch (e: any) {
+      lastErr = e;
+      const status = e?.response?.status;
+      const retryable =
+        !status ||
+        status >= 502 ||
+        e?.code === 'ECONNABORTED' ||
+        e?.message === 'Network Error';
+      if (attempt < retries && retryable) {
+        await sleep(2500 * (attempt + 1));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 export default function ImportarGuiasScreen() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -139,13 +271,17 @@ export default function ImportarGuiasScreen() {
           ocrAPI.processar(it.base64),
         ]);
         const d = ocrRes.data;
+        const hints = hintsFromFilename(it.filename);
         await sleep(200);
+
+        const tipoDoc = d.tipo_documento || hints.tipo_documento;
+        const competencia = d.competencia || hints.competencia;
 
         const steps: Record<StepKey, boolean> = {
           empresa: false,
           valor: Boolean(d.valor),
           vencimento: Boolean(d.data_vencimento),
-          tipo: Boolean(d.tipo_documento),
+          tipo: Boolean(tipoDoc),
           cnpj: Boolean(d.cnpj),
           barcode: Boolean(d.codigo_barras),
         };
@@ -167,9 +303,9 @@ export default function ImportarGuiasScreen() {
           data_vencimento: d.data_vencimento,
           codigo_barras: d.codigo_barras,
           qr_code_pix: d.qr_code_pix,
-          competencia: d.competencia,
-          tipo_documento: d.tipo_documento,
-          descricao_sugerida: d.descricao_sugerida,
+          competencia,
+          tipo_documento: tipoDoc,
+          descricao_sugerida: d.descricao_sugerida || hints.descricao_sugerida,
           cnpj: d.cnpj,
         });
         setItems((prev) =>
@@ -193,23 +329,22 @@ export default function ImportarGuiasScreen() {
     }
 
     try {
-      const analise = await ocrAPI.loteAnalisar(
-        ocrResults.map((r) => ({
-          temp_id: r.temp_id,
-          filename: r.filename,
-          file_hash: r.file_hash,
-          texto_completo: r.texto_completo,
-          valor: r.valor,
-          data_vencimento: r.data_vencimento,
-          codigo_barras: r.codigo_barras,
-          qr_code_pix: r.qr_code_pix,
-          competencia: r.competencia,
-          tipo_documento: r.tipo_documento,
-          descricao_sugerida: r.descricao_sugerida,
-          cnpj: r.cnpj,
-          empresa_id: r.empresa_id,
-        })),
-      );
+      const payload = ocrResults.map((r) => ({
+        temp_id: r.temp_id,
+        filename: r.filename,
+        file_hash: r.file_hash,
+        texto_completo: (r.texto_completo || '').slice(0, 20000),
+        valor: r.valor,
+        data_vencimento: r.data_vencimento,
+        codigo_barras: r.codigo_barras,
+        qr_code_pix: r.qr_code_pix,
+        competencia: r.competencia,
+        tipo_documento: r.tipo_documento,
+        descricao_sugerida: r.descricao_sugerida,
+        cnpj: r.cnpj,
+        empresa_id: r.empresa_id,
+      }));
+      const analise = await loteAnalisarComRetry(payload);
       const merged = (analise.data.itens || []).map((row: any) => {
         const src = ocrResults.find((o) => o.temp_id === row.temp_id)!;
         return {
@@ -236,20 +371,14 @@ export default function ImportarGuiasScreen() {
     } catch (e: any) {
       const status = e?.response?.status;
       const detail = e?.response?.data?.detail || e?.message || 'erro desconhecido';
-      showToast(`Não foi possível analisar o lote (${status || 'sem resposta'}): ${detail}`, 'error');
-      // Fallback: mostra os itens do OCR e calcula um resumo client-side
-      // pra que o usuário ainda consiga preencher manualmente e confirmar.
-      setItems(ocrResults);
-      setResumo({
-        total: ocrResults.length,
-        prontos: 0,
-        duplicatas: 0,
-        sem_empresa: ocrResults.length,
-        ja_cadastradas: 0,
-        cnpjs_novos_unicos: 0,
-        analise_falhou: true,
-      });
-      setGrupos([]);
+      const fallback = analisarLoteLocal(ocrResults, empresas);
+      showToast(
+        `Análise no servidor falhou (${status || 'sem resposta'}). Usando revisão local.`,
+        'info',
+      );
+      setItems(fallback.itens);
+      setResumo({ ...fallback.resumo, analise_falhou: true, erro_detalhe: detail });
+      setGrupos(fallback.grupos);
       setPhase('review');
     } finally {
       setProcessing(false);
@@ -264,8 +393,6 @@ export default function ImportarGuiasScreen() {
 
   const recalcPronto = (it: LoteItem) =>
     Boolean(it.empresa_id && it.valor && (it.data_vencimento_iso || it.data_vencimento));
-
-  const onlyDigits = (v?: string | null) => (v || '').replace(/\D/g, '');
 
   // CNPJs únicos detectados pelo OCR que ainda não estão cadastrados
   const cnpjsNovosUnicos = useMemo(() => {
@@ -494,11 +621,13 @@ export default function ImportarGuiasScreen() {
                   <SummaryChip label="Sem empresa" value={String(resumo.sem_empresa)} color="#DC2626" />
                 </View>
                 {resumo.analise_falhou && (
-                  <View style={[styles.infoBanner, { backgroundColor: '#FEF2F2', borderColor: '#FCA5A5' }]}>
-                    <Ionicons name="warning" size={20} color="#B91C1C" />
-                    <Text style={[styles.infoBannerText, { color: '#7F1D1D' }]}>
-                      A análise automática falhou, mas você pode preencher os campos manualmente
-                      abaixo e confirmar. Se persistir, recarregue a página e tente novamente.
+                  <View style={[styles.infoBanner, { backgroundColor: '#FFFBEB', borderColor: '#FCD34D' }]}>
+                    <Ionicons name="warning" size={20} color="#B45309" />
+                    <Text style={[styles.infoBannerText, { color: '#92400E' }]}>
+                      A análise automática no servidor falhou — usamos uma revisão local com os dados
+                      lidos pelo OCR e pistas do nome do arquivo (ex.: ICMS, competência). Revise os
+                      campos e confirme normalmente.
+                      {resumo.erro_detalhe ? `\n\nDetalhe: ${resumo.erro_detalhe}` : ''}
                     </Text>
                   </View>
                 )}
@@ -670,7 +799,7 @@ export default function ImportarGuiasScreen() {
                 </View>
                 <TextInput
                   style={[styles.cellInput, { flex: 0.6 }]}
-                  value={item.tipo || ''}
+                  value={item.tipo || item.tipo_documento || ''}
                   onChangeText={(t) => updateItem(item.temp_id, { tipo: t.toUpperCase() })}
                 />
                 <TextInput
