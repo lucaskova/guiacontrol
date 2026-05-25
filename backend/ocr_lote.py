@@ -1495,7 +1495,11 @@ def analisar_itens_lote(
 
         )
 
-        texto_match = f"{item.get('filename') or ''}\n{texto}"
+        # Match heurístico por nome usa SOMENTE o texto OCR (não o filename),
+        # pois nomes de arquivo são controlados pelo usuário e podem causar
+        # falso positivo em empresas com nomes curtos. Sem texto OCR suficiente,
+        # exigimos CNPJ válido (match_empresa retorna None em caso contrário).
+        texto_match = texto if texto and len(texto.strip()) >= 50 else ""
         emp, conf = match_empresa(empresas, cnpj, texto_match)
 
         item["ja_cadastrada"] = False
