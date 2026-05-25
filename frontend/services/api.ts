@@ -97,6 +97,8 @@ export const cnpjAPI = {
 // Empresas
 export const empresasAPI = {
   criar: (data: { cnpj: string }) => api.post('/empresas', data),
+  criarQuick: (data: { nome: string; cnpj?: string }) =>
+    api.post('/empresas/quick', data),
   listar: (params?: { search?: string }) => api.get('/empresas', { params }),
   obter: (empresaId: string) => api.get(`/empresas/${empresaId}`),
   editar: (empresaId: string, data: any) => api.patch(`/empresas/${empresaId}`, data),

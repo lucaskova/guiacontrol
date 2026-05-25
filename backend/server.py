@@ -188,6 +188,10 @@ class Empresa(BaseModel):
 class EmpresaCreate(BaseModel):
     cnpj: str
 
+class EmpresaQuickCreate(BaseModel):
+    nome: str
+    cnpj: Optional[str] = None
+
 class EmpresaUpdate(BaseModel):
     razao_social: Optional[str] = None
     nome_fantasia: Optional[str] = None
@@ -1851,6 +1855,67 @@ async def criar_empresa(
         {"_id": 0}
     )
     return empresa
+
+
+@api_router.post("/empresas/quick")
+async def criar_empresa_quick(
+    payload: EmpresaQuickCreate,
+    session_token: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Cadastro rápido — empresa só com nome (CNPJ opcional). Pode ser completada depois."""
+    user = await get_current_user(session_token, authorization)
+
+    nome = (payload.nome or "").strip()
+    if len(nome) < 3:
+        raise HTTPException(status_code=400, detail="Nome muito curto (mínimo 3 caracteres)")
+    if len(nome) > 200:
+        nome = nome[:200]
+
+    cnpj_limpo = ""
+    if payload.cnpj:
+        cnpj_limpo = re.sub(r"\D", "", payload.cnpj)
+        if cnpj_limpo and len(cnpj_limpo) != 14:
+            raise HTTPException(status_code=400, detail="CNPJ deve ter 14 dígitos")
+
+    if cnpj_limpo:
+        existing = await db.empresas.find_one(
+            {"user_id": user["user_id"], "cnpj": cnpj_limpo},
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+
+    nome_norm = nome.upper()
+    existing_nome = await db.empresas.find_one(
+        {
+            "user_id": user["user_id"],
+            "$or": [
+                {"razao_social": {"$regex": f"^{re.escape(nome_norm)}$", "$options": "i"}},
+                {"nome_fantasia": {"$regex": f"^{re.escape(nome_norm)}$", "$options": "i"}},
+            ],
+        },
+        {"_id": 0},
+    )
+    if existing_nome:
+        return existing_nome
+
+    empresa_id = f"empresa_{uuid.uuid4().hex[:12]}"
+    empresa_doc = {
+        "empresa_id": empresa_id,
+        "user_id": user["user_id"],
+        "cnpj": cnpj_limpo,
+        "razao_social": nome,
+        "nome_fantasia": nome,
+        "dados_completos": None,
+        "portal_token": _new_portal_token(),
+        "created_at": datetime.now(timezone.utc),
+        "cadastro_incompleto": not cnpj_limpo,
+    }
+    await db.empresas.insert_one(empresa_doc)
+    empresa = await db.empresas.find_one({"empresa_id": empresa_id}, {"_id": 0})
+    return empresa
+
 
 @api_router.get("/empresas")
 async def listar_empresas(

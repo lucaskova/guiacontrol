@@ -669,6 +669,38 @@ export default function ImportarGuiasScreen() {
     }
   };
 
+  const handleCadastrarPorNomeRow = async (item: LoteItem) => {
+    const nome = (item.empresa_hint || extractCompanyFromFilename(item.filename) || '').trim();
+    if (nome.length < 3) {
+      showToast('Não foi possível identificar o nome da empresa pelo arquivo', 'error');
+      return;
+    }
+    const tempKey = `__nome_${item.temp_id}`;
+    setCreatingCnpjs((prev) => new Set(prev).add(tempKey));
+    try {
+      const draft = cnpjDrafts[item.temp_id] || '';
+      const digits = onlyDigits(draft);
+      const cnpjOpcional = digits.length === 14 && validarCnpj(digits) ? digits : undefined;
+      const res = await empresasAPI.criarQuick({ nome, cnpj: cnpjOpcional });
+      const emp = res.data;
+      setEmpresas((prev) => {
+        if (prev.some((e) => e.empresa_id === emp.empresa_id)) return prev;
+        return [...prev, emp];
+      });
+      vincularEmpresaNasLinhas(emp, item.empresa_hint, item.temp_id);
+      const nomeFinal = emp.nome_fantasia || emp.razao_social || nome;
+      showToast(`${nomeFinal} cadastrada e vinculada`, 'success');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Não foi possível cadastrar a empresa', 'error');
+    } finally {
+      setCreatingCnpjs((prev) => {
+        const n = new Set(prev);
+        n.delete(tempKey);
+        return n;
+      });
+    }
+  };
+
   const handleCadastrarTodasEmpresasNovas = async () => {
     if (!cnpjsNovosUnicos.length) return;
     setCreatingAll(true);
@@ -810,9 +842,9 @@ export default function ImportarGuiasScreen() {
                 <View style={[styles.infoBanner, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
                   <Ionicons name="business" size={20} color="#1D4ED8" />
                   <Text style={[styles.infoBannerText, { color: '#1E3A8A' }]}>
-                    {resumoLive.sem_empresa === 1
-                      ? '1 guia sem empresa vinculada. Informe o CNPJ abaixo para cadastrar (dados vêm da Receita) ou clique em uma empresa existente.'
-                      : `${resumoLive.sem_empresa} guias sem empresa. Informe o CNPJ de cada uma para cadastrar ou vincule a uma empresa já cadastrada.`}
+                    {resumoLive.sem_empresa === 1 ? '1 guia sem empresa.' : `${resumoLive.sem_empresa} guias sem empresa.`}
+                    {' '}Você pode cadastrar pelo CNPJ (dados vêm da Receita) ou clicar em
+                    {' '}“Cadastrar só com o nome” para criar a empresa rapidamente — você completa o CNPJ depois.
                   </Text>
                 </View>
               )}
@@ -965,33 +997,52 @@ export default function ImportarGuiasScreen() {
                       </TouchableOpacity>
                     );
                   })()}
-                  {!item.empresa_id && item.empresa_hint && !item.cnpj_novo && (
-                    <View style={styles.cnpjInlineRow}>
-                      <TextInput
-                        style={styles.cnpjInlineInput}
-                        value={cnpjDrafts[item.temp_id] || ''}
-                        onChangeText={(t) =>
-                          setCnpjDrafts((prev) => ({ ...prev, [item.temp_id]: t }))
-                        }
-                        placeholder="CNPJ da empresa"
-                        keyboardType="number-pad"
-                      />
-                      <TouchableOpacity
-                        style={[
-                          styles.addEmpBtn,
-                          creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || '')) && { opacity: 0.6 },
-                        ]}
-                        onPress={() => handleCadastrarManualRow(item)}
-                        disabled={creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || ''))}
-                      >
-                        {creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || '')) ? (
-                          <ActivityIndicator size="small" color="#FFF" />
-                        ) : (
-                          <Text style={styles.addEmpBtnText}>Cadastrar</Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  )}
+                  {!item.empresa_id && item.empresa_hint && !item.cnpj_novo && (() => {
+                    const cnpjLoading = creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || ''));
+                    const nameLoading = creatingCnpjs.has(`__nome_${item.temp_id}`);
+                    return (
+                      <View style={{ marginTop: 6 }}>
+                        <View style={styles.cnpjInlineRow}>
+                          <TextInput
+                            style={styles.cnpjInlineInput}
+                            value={cnpjDrafts[item.temp_id] || ''}
+                            onChangeText={(t) =>
+                              setCnpjDrafts((prev) => ({ ...prev, [item.temp_id]: t }))
+                            }
+                            placeholder="CNPJ (opcional)"
+                            keyboardType="number-pad"
+                          />
+                          <TouchableOpacity
+                            style={[styles.addEmpBtn, cnpjLoading && { opacity: 0.6 }]}
+                            onPress={() => handleCadastrarManualRow(item)}
+                            disabled={cnpjLoading || nameLoading}
+                          >
+                            {cnpjLoading ? (
+                              <ActivityIndicator size="small" color="#FFF" />
+                            ) : (
+                              <Text style={styles.addEmpBtnText}>Com CNPJ</Text>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                        <TouchableOpacity
+                          style={[styles.quickEmpBtn, nameLoading && { opacity: 0.6 }]}
+                          onPress={() => handleCadastrarPorNomeRow(item)}
+                          disabled={nameLoading || cnpjLoading}
+                        >
+                          {nameLoading ? (
+                            <ActivityIndicator size="small" color="#4F46E5" />
+                          ) : (
+                            <>
+                              <Ionicons name="flash" size={13} color="#4F46E5" />
+                              <Text style={styles.quickEmpBtnText} numberOfLines={1}>
+                                Cadastrar só com o nome “{item.empresa_hint?.slice(0, 28)}”
+                              </Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })()}
                   {!item.empresa_id && empresas.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       {empresasSugeridasParaItem(item, empresas).slice(0, 8).map((e, idx) => (
@@ -1336,6 +1387,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     backgroundColor: '#FFF',
   },
+  quickEmpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+  },
+  quickEmpBtnText: { color: '#4F46E5', fontWeight: '700', fontSize: 11, flexShrink: 1 },
   ignoreDup: { width: '100%', marginTop: 4 },
   ignoreDupText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
   confirmBtn: {
