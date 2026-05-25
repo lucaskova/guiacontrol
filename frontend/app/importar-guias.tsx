@@ -141,11 +141,12 @@ function significantTokens(name: string): string[] {
 
 function extractCompanyFromFilename(filename?: string) {
   if (!filename) return '';
-  return filename
-    .replace(/\.[^.]+$/i, '')
-    .replace(/^GUIA\s+(ICMS\s*A?\s*|PARCELAMENTO\s*\d+\s*)/i, '')
-    .replace(/\s+\d{2}[./]\d{4}\s*$/i, '')
-    .trim();
+  let base = filename.replace(/\.[^.]+$/i, '');
+  base = base.replace(/^GUIA\s+/i, '');
+  base = base.replace(/^(ICMS\s*A?\s*|PARCELAMENTO\s*\d*\s*)/i, '');
+  base = base.replace(/\s+\d{2}[./]\d{4}\s*$/i, '');
+  base = base.replace(/^\d+\s*[-–]?\s*/i, '');
+  return base.trim();
 }
 
 function matchEmpresaLocal(
@@ -207,14 +208,16 @@ function matchEmpresaLocal(
 function agruparItensLocal(itens: LoteItem[]) {
   const map = new Map<string, LoteItem[]>();
   for (const it of itens) {
-    const key = it.empresa_id || '_sem_empresa';
+    const hint = it.empresa_hint || extractCompanyFromFilename(it.filename);
+    const key = it.empresa_id || hint || it.temp_id;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(it);
   }
-  return Array.from(map.entries()).map(([empId, lista]) => ({
-    empresa_id: empId === '_sem_empresa' ? null : empId,
+  return Array.from(map.entries()).map(([key, lista]) => ({
+    empresa_id: lista[0]?.empresa_id || null,
     empresa_nome:
       lista[0]?.empresa_nome ||
+      lista[0]?.empresa_hint ||
       extractCompanyFromFilename(lista[0]?.filename) ||
       'Identificar empresa',
     quantidade: lista.length,
@@ -340,14 +343,13 @@ export default function ImportarGuiasScreen() {
   const [resultado, setResultado] = useState<any>(null);
   const [creatingCnpjs, setCreatingCnpjs] = useState<Set<string>>(new Set());
   const [creatingAll, setCreatingAll] = useState(false);
+  const [cnpjDrafts, setCnpjDrafts] = useState<Record<string, string>>({});
 
   const progressPct = useMemo(() => {
     if (!items.length) return 0;
     const done = items.filter((i) => i.status === 'done' || i.status === 'error').length;
     return Math.round((done / items.length) * 100);
   }, [items]);
-
-  const selectedCount = items.filter((i) => i.selected && i.pronto).length;
 
   const loadEmpresas = useCallback(async () => {
     const res = await empresasAPI.listar();
@@ -509,14 +511,19 @@ export default function ImportarGuiasScreen() {
     })();
   };
 
-  const updateItem = (tempId: string, patch: Partial<LoteItem>) => {
-    setItems((prev) =>
-      prev.map((i) => (i.temp_id === tempId ? { ...i, ...patch, pronto: undefined } : i)),
-    );
-  };
-
   const recalcPronto = (it: LoteItem) =>
     Boolean(it.empresa_id && it.valor && (it.data_vencimento_iso || it.data_vencimento));
+
+  const updateItem = (tempId: string, patch: Partial<LoteItem>) => {
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.temp_id !== tempId) return i;
+        const updated = { ...i, ...patch };
+        updated.pronto = recalcPronto(updated);
+        return updated;
+      }),
+    );
+  };
 
   // CNPJs únicos detectados pelo OCR que ainda não estão cadastrados
   const cnpjsNovosUnicos = useMemo(() => {
@@ -531,6 +538,22 @@ export default function ImportarGuiasScreen() {
     });
     return Array.from(map.values());
   }, [items]);
+
+  const selectedCount = items.filter((i) => i.selected && recalcPronto(i)).length;
+
+  const resumoLive = useMemo(
+    () => ({
+      total: items.length,
+      prontos: items.filter((i) => recalcPronto(i)).length,
+      duplicatas: items.filter((i) => i.tem_duplicidade).length,
+      sem_empresa: items.filter((i) => !i.empresa_id).length,
+      ja_cadastradas: items.filter((i) => i.ja_cadastrada).length,
+      cnpjs_novos_unicos: cnpjsNovosUnicos.length,
+    }),
+    [items, cnpjsNovosUnicos],
+  );
+
+  const gruposLive = useMemo(() => agruparItensLocal(items), [items]);
 
   const aplicarEmpresaNasLinhasDoCnpj = (cnpjDigits: string, empresa: any) => {
     setItems((prev) =>
@@ -600,6 +623,46 @@ export default function ImportarGuiasScreen() {
     const r = await cadastrarEmpresaPorCnpj(cnpj);
     if (r.ok && r.empresa) {
       const nome = r.empresa.nome_fantasia || r.empresa.razao_social || 'Empresa';
+      showToast(`${nome} cadastrada e vinculada`, 'success');
+    } else {
+      showToast(r.erro || 'Não foi possível cadastrar a empresa', 'error');
+    }
+  };
+
+  const vincularEmpresaNasLinhas = (empresa: any, hint?: string, tempId?: string) => {
+    setItems((prev) =>
+      prev.map((row) => {
+        const sameHint = hint && row.empresa_hint === hint;
+        const sameRow = tempId && row.temp_id === tempId;
+        if (!sameRow && !sameHint) return row;
+        const updated: LoteItem = {
+          ...row,
+          empresa_id: empresa.empresa_id,
+          empresa_nome: empresa.nome_fantasia || empresa.razao_social,
+          match_confianca: 'alta',
+          cnpj_novo: false,
+          steps: { ...row.steps, empresa: true },
+        };
+        updated.pronto = recalcPronto(updated);
+        if (updated.pronto && !updated.tem_duplicidade && !updated.arquivo_repetido_lote) {
+          updated.selected = true;
+        }
+        return updated;
+      }),
+    );
+  };
+
+  const handleCadastrarManualRow = async (item: LoteItem) => {
+    const draft = cnpjDrafts[item.temp_id] || '';
+    const digits = onlyDigits(draft);
+    if (digits.length !== 14 || !validarCnpj(digits)) {
+      showToast('Informe um CNPJ válido com 14 dígitos', 'error');
+      return;
+    }
+    const r = await cadastrarEmpresaPorCnpj(digits);
+    if (r.ok && r.empresa) {
+      vincularEmpresaNasLinhas(r.empresa, item.empresa_hint, item.temp_id);
+      const nome = r.empresa.nome_fantasia || r.empresa.razao_social || item.empresa_hint;
       showToast(`${nome} cadastrada e vinculada`, 'success');
     } else {
       showToast(r.erro || 'Não foi possível cadastrar a empresa', 'error');
@@ -736,26 +799,34 @@ export default function ImportarGuiasScreen() {
 
         {phase === 'review' && (
           <View>
-            {resumo && (
-              <>
-                <View style={styles.summaryRow}>
-                  <SummaryChip label="Total" value={String(resumo.total)} />
-                  <SummaryChip label="Prontas" value={String(resumo.prontos)} color="#059669" />
-                  <SummaryChip label="Duplicatas" value={String(resumo.duplicatas)} color="#D97706" />
-                  <SummaryChip label="Sem empresa" value={String(resumo.sem_empresa)} color="#DC2626" />
+            <>
+              <View style={styles.summaryRow}>
+                <SummaryChip label="Total" value={String(resumoLive.total)} />
+                <SummaryChip label="Prontas" value={String(resumoLive.prontos)} color="#059669" />
+                <SummaryChip label="Duplicatas" value={String(resumoLive.duplicatas)} color="#D97706" />
+                <SummaryChip label="Sem empresa" value={String(resumoLive.sem_empresa)} color="#DC2626" />
+              </View>
+              {resumoLive.sem_empresa > 0 && (
+                <View style={[styles.infoBanner, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
+                  <Ionicons name="business" size={20} color="#1D4ED8" />
+                  <Text style={[styles.infoBannerText, { color: '#1E3A8A' }]}>
+                    {resumoLive.sem_empresa === 1
+                      ? '1 guia sem empresa vinculada. Informe o CNPJ abaixo para cadastrar (dados vêm da Receita) ou clique em uma empresa existente.'
+                      : `${resumoLive.sem_empresa} guias sem empresa. Informe o CNPJ de cada uma para cadastrar ou vincule a uma empresa já cadastrada.`}
+                  </Text>
                 </View>
-                {(resumo.ja_cadastradas > 0 || resumo.duplicatas > 0) && (
-                  <View style={styles.infoBanner}>
-                    <Ionicons name="information-circle" size={20} color="#1E40AF" />
-                    <Text style={styles.infoBannerText}>
-                      {resumo.ja_cadastradas > 0
-                        ? `${resumo.ja_cadastradas} guia(s) já existem no sistema (mesmo código de barras). A empresa foi vinculada automaticamente. Para testar de novo, use arquivos novos ou exclua as guias antigas.`
-                        : 'Alguns itens parecem repetidos neste lote.'}
-                    </Text>
-                  </View>
-                )}
-              </>
-            )}
+              )}
+              {(resumoLive.ja_cadastradas > 0 || resumoLive.duplicatas > 0) && (
+                <View style={styles.infoBanner}>
+                  <Ionicons name="information-circle" size={20} color="#1E40AF" />
+                  <Text style={styles.infoBannerText}>
+                    {resumoLive.ja_cadastradas > 0
+                      ? `${resumoLive.ja_cadastradas} guia(s) já existem no sistema (mesmo código de barras). A empresa foi vinculada automaticamente. Para testar de novo, use arquivos novos ou exclua as guias antigas.`
+                      : 'Alguns itens parecem repetidos neste lote.'}
+                  </Text>
+                </View>
+              )}
+            </>
 
             {cnpjsNovosUnicos.length > 0 && (
               <View style={styles.cnpjBanner}>
@@ -792,11 +863,11 @@ export default function ImportarGuiasScreen() {
               </View>
             )}
 
-            {grupos.length > 0 && (
+            {gruposLive.length > 0 && (
               <View style={styles.groupCard}>
                 <Text style={styles.groupTitle}>Agrupamento automático</Text>
-                {grupos.map((g) => (
-                  <Text key={g.empresa_id || 'x'} style={styles.groupLine}>
+                {gruposLive.map((g) => (
+                  <Text key={`${g.empresa_id || g.empresa_nome}-${g.quantidade}`} style={styles.groupLine}>
                     • {g.empresa_nome} — {g.quantidade} guia(s)
                   </Text>
                 ))}
@@ -894,6 +965,33 @@ export default function ImportarGuiasScreen() {
                       </TouchableOpacity>
                     );
                   })()}
+                  {!item.empresa_id && item.empresa_hint && !item.cnpj_novo && (
+                    <View style={styles.cnpjInlineRow}>
+                      <TextInput
+                        style={styles.cnpjInlineInput}
+                        value={cnpjDrafts[item.temp_id] || ''}
+                        onChangeText={(t) =>
+                          setCnpjDrafts((prev) => ({ ...prev, [item.temp_id]: t }))
+                        }
+                        placeholder="CNPJ da empresa"
+                        keyboardType="number-pad"
+                      />
+                      <TouchableOpacity
+                        style={[
+                          styles.addEmpBtn,
+                          creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || '')) && { opacity: 0.6 },
+                        ]}
+                        onPress={() => handleCadastrarManualRow(item)}
+                        disabled={creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || ''))}
+                      >
+                        {creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || '')) ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <Text style={styles.addEmpBtnText}>Cadastrar</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  )}
                   {!item.empresa_id && empresas.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       {empresasSugeridasParaItem(item, empresas).slice(0, 8).map((e, idx) => (
@@ -1220,6 +1318,24 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   addEmpBtnText: { color: '#FFF', fontWeight: '700', fontSize: 11 },
+  cnpjInlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  cnpjInlineInput: {
+    flex: 1,
+    minWidth: 120,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: Platform.OS === 'web' ? 8 : 6,
+    fontSize: 12,
+    backgroundColor: '#FFF',
+  },
   ignoreDup: { width: '100%', marginTop: 4 },
   ignoreDupText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
   confirmBtn: {
