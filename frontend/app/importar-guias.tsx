@@ -55,6 +55,7 @@ type LoteItem = {
   ja_cadastrada?: boolean;
   cnpj_exibicao?: string;
   cnpj_novo?: boolean;
+  empresa_hint?: string;
   arquivo_repetido_lote?: boolean;
   selected: boolean;
   ignorar_duplicidade: boolean;
@@ -109,6 +110,7 @@ function hintsFromFilename(filename?: string) {
     }
   }
   if (base.includes('PARCELAMENTO')) {
+    hints.tipo_documento = 'PARCELAMENTO';
     hints.descricao_sugerida = 'Parcelamento';
   }
   const comp = base.match(/\b(\d{2})[\./](\d{4})\b/);
@@ -116,39 +118,146 @@ function hintsFromFilename(filename?: string) {
   return hints;
 }
 
+function normalizeName(s: string) {
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const STOP_TOKENS = new Set([
+  'LTDA', 'ME', 'EPP', 'EIRELI', 'SA', 'CIA', 'DE', 'DA', 'DO', 'DOS', 'DAS', 'E',
+  'INDUSTRIA', 'COMERCIO', 'COM', 'IND', 'EQUIP', 'EQUIPAMENTOS',
+]);
+
+function significantTokens(name: string): string[] {
+  return normalizeName(name)
+    .split(' ')
+    .filter((t) => t.length >= 3 && !STOP_TOKENS.has(t));
+}
+
+function extractCompanyFromFilename(filename?: string) {
+  if (!filename) return '';
+  return filename
+    .replace(/\.[^.]+$/i, '')
+    .replace(/^GUIA\s+(ICMS\s*A?\s*|PARCELAMENTO\s*\d+\s*)/i, '')
+    .replace(/\s+\d{2}[./]\d{4}\s*$/i, '')
+    .trim();
+}
+
+function matchEmpresaLocal(
+  empresasList: any[],
+  item: Pick<LoteItem, 'cnpj' | 'filename' | 'texto_completo'>,
+) {
+  const cnpjDigits = onlyDigits(item.cnpj);
+  if (cnpjDigits.length === 14) {
+    const emp = empresasList.find((e) => onlyDigits(e.cnpj) === cnpjDigits);
+    if (emp) return { emp, conf: 'alta' as const };
+  }
+
+  const textoNorm = normalizeName(`${item.filename || ''} ${item.texto_completo || ''}`);
+  const nomeArquivo = extractCompanyFromFilename(item.filename);
+  const nomeArquivoNorm = normalizeName(nomeArquivo);
+  const fileTokens = significantTokens(nomeArquivo || item.filename || '');
+
+  let best: any = null;
+  let bestScore = 0;
+
+  for (const emp of empresasList) {
+    for (const campo of [emp.nome_fantasia, emp.razao_social]) {
+      if (!campo) continue;
+      const nomeNorm = normalizeName(campo);
+      if (nomeNorm.length < 5) continue;
+
+      if (textoNorm.includes(nomeNorm) && nomeNorm.length >= 8) {
+        return { emp, conf: 'alta' as const };
+      }
+
+      if (nomeArquivoNorm.length >= 5) {
+        if (nomeNorm.includes(nomeArquivoNorm) || nomeArquivoNorm.includes(nomeNorm)) {
+          const score = Math.min(nomeNorm.length, nomeArquivoNorm.length) / Math.max(nomeNorm.length, nomeArquivoNorm.length);
+          if (score > bestScore) {
+            best = emp;
+            bestScore = score;
+          }
+        }
+      }
+
+      const empTokens = significantTokens(campo);
+      if (empTokens.length >= 2 && fileTokens.length >= 2) {
+        const hits = empTokens.filter((t) => fileTokens.includes(t)).length;
+        const score = hits / empTokens.length;
+        if (hits >= 2 && score >= 0.45 && score > bestScore) {
+          best = emp;
+          bestScore = score;
+        }
+      }
+    }
+  }
+
+  if (best && bestScore >= 0.45) {
+    return { emp: best, conf: bestScore >= 0.75 ? ('alta' as const) : ('media' as const) };
+  }
+  return { emp: null, conf: 'nenhuma' as const };
+}
+
+function agruparItensLocal(itens: LoteItem[]) {
+  const map = new Map<string, LoteItem[]>();
+  for (const it of itens) {
+    const key = it.empresa_id || '_sem_empresa';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(it);
+  }
+  return Array.from(map.entries()).map(([empId, lista]) => ({
+    empresa_id: empId === '_sem_empresa' ? null : empId,
+    empresa_nome:
+      lista[0]?.empresa_nome ||
+      extractCompanyFromFilename(lista[0]?.filename) ||
+      'Identificar empresa',
+    quantidade: lista.length,
+    itens: lista.map((x) => x.temp_id),
+  }));
+}
+
 function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
+  const hashesVistos = new Set<string>();
+
   const processados = items.map((item) => {
     const hints = hintsFromFilename(item.filename);
     const tipo = item.tipo || item.tipo_documento || hints.tipo_documento || 'OUTROS';
     const competencia = item.competencia || hints.competencia;
     const cnpjDigits = onlyDigits(item.cnpj);
-    let empresa_id = item.empresa_id;
-    let empresa_nome = item.empresa_nome;
-    let match_confianca = item.match_confianca || 'nenhuma';
+    const nomeArquivo = extractCompanyFromFilename(item.filename);
 
-    if (cnpjDigits.length === 14) {
-      const emp = empresasList.find((e) => onlyDigits(e.cnpj) === cnpjDigits);
-      if (emp) {
-        empresa_id = emp.empresa_id;
-        empresa_nome = emp.nome_fantasia || emp.razao_social;
-        match_confianca = 'alta';
-      }
+    const match = matchEmpresaLocal(empresasList, item);
+    let empresa_id = item.empresa_id || match.emp?.empresa_id;
+    let empresa_nome = item.empresa_nome || match.emp?.nome_fantasia || match.emp?.razao_social;
+    let match_confianca = match.conf;
+
+    let arquivo_repetido_lote = false;
+    if (item.file_hash) {
+      if (hashesVistos.has(item.file_hash)) arquivo_repetido_lote = true;
+      else hashesVistos.add(item.file_hash);
     }
 
-  const updated: LoteItem = {
+    const updated: LoteItem = {
       ...item,
       tipo,
       competencia,
-      descricao_sugerida: item.descricao_sugerida || hints.descricao_sugerida,
+      descricao_sugerida: item.descricao_sugerida || hints.descricao_sugerida || tipo,
       tipo_documento: item.tipo_documento || hints.tipo_documento,
       empresa_id,
       empresa_nome,
       match_confianca,
       cnpj_exibicao: formatCnpj(cnpjDigits),
       cnpj_novo: Boolean(!empresa_id && cnpjDigits.length === 14 && validarCnpj(cnpjDigits)),
-      alertas_duplicidade: item.alertas_duplicidade || [],
-      tem_duplicidade: item.tem_duplicidade || false,
+      alertas_duplicidade: arquivo_repetido_lote ? ['Arquivo duplicado no mesmo lote.'] : [],
+      tem_duplicidade: arquivo_repetido_lote,
       ja_cadastrada: item.ja_cadastrada || false,
+      arquivo_repetido_lote,
       steps: {
         ...item.steps,
         empresa: Boolean(empresa_id),
@@ -161,6 +270,9 @@ function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
     updated.selected = Boolean(
       updated.pronto && !updated.arquivo_repetido_lote && !updated.ja_cadastrada,
     );
+    if (!updated.empresa_id && nomeArquivo) {
+      updated.empresa_hint = nomeArquivo;
+    }
     return updated;
   });
 
@@ -170,7 +282,7 @@ function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
 
   return {
     itens: processados,
-    grupos: [] as any[],
+    grupos: agruparItensLocal(processados),
     resumo: {
       total: processados.length,
       prontos: processados.filter((i) => i.pronto).length,
@@ -178,9 +290,17 @@ function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
       sem_empresa: processados.filter((i) => !i.empresa_id).length,
       ja_cadastradas: processados.filter((i) => i.ja_cadastrada).length,
       cnpjs_novos_unicos: cnpjsNovos.size,
-      analise_fallback: true,
     },
   };
+}
+
+function empresasSugeridasParaItem(item: LoteItem, empresasList: any[]) {
+  const match = matchEmpresaLocal(empresasList, item);
+  if (!match.emp) return empresasList;
+  return [
+    match.emp,
+    ...empresasList.filter((e) => e.empresa_id !== match.emp!.empresa_id),
+  ];
 }
 
 async function loteAnalisarComRetry(payload: unknown[], retries = 2) {
@@ -235,7 +355,14 @@ export default function ImportarGuiasScreen() {
   }, []);
 
   const processFiles = async (files: PickedBulkFile[]) => {
-    await loadEmpresas();
+    let empresasList: any[] = [];
+    try {
+      const empRes = await empresasAPI.listar();
+      empresasList = empRes.data || [];
+      setEmpresas(empresasList);
+    } catch {
+      showToast('Não foi possível carregar empresas — vincule manualmente se necessário', 'info');
+    }
     const initial: LoteItem[] = files.map((f) => ({
       temp_id: f.id,
       filename: f.name,
@@ -328,61 +455,58 @@ export default function ImportarGuiasScreen() {
       }
     }
 
-    try {
-      const payload = ocrResults.map((r) => ({
-        temp_id: r.temp_id,
-        filename: r.filename,
-        file_hash: r.file_hash,
-        texto_completo: (r.texto_completo || '').slice(0, 20000),
-        valor: r.valor,
-        data_vencimento: r.data_vencimento,
-        codigo_barras: r.codigo_barras,
-        qr_code_pix: r.qr_code_pix,
-        competencia: r.competencia,
-        tipo_documento: r.tipo_documento,
-        descricao_sugerida: r.descricao_sugerida,
-        cnpj: r.cnpj,
-        empresa_id: r.empresa_id,
-      }));
-      const analise = await loteAnalisarComRetry(payload);
-      const merged = (analise.data.itens || []).map((row: any) => {
-        const src = ocrResults.find((o) => o.temp_id === row.temp_id)!;
-        return {
-          ...src,
-          ...row,
-          steps: {
-            ...src.steps,
-            empresa: Boolean(row.empresa_id),
-          },
-          pronto: row.pronto,
-          ja_cadastrada: row.ja_cadastrada,
-          cnpj_exibicao: row.cnpj_exibicao,
-          cnpj_novo: row.cnpj_novo,
-          arquivo_repetido_lote: row.arquivo_repetido_lote,
-          selected: Boolean(
-            row.pronto && !row.arquivo_repetido_lote && !row.ja_cadastrada,
-          ),
-        };
-      });
-      setItems(merged);
-      setGrupos(analise.data.grupos || []);
-      setResumo(analise.data.resumo);
-      setPhase('review');
-    } catch (e: any) {
-      const status = e?.response?.status;
-      const detail = e?.response?.data?.detail || e?.message || 'erro desconhecido';
-      const fallback = analisarLoteLocal(ocrResults, empresas);
-      showToast(
-        `Análise no servidor falhou (${status || 'sem resposta'}). Usando revisão local.`,
-        'info',
-      );
-      setItems(fallback.itens);
-      setResumo({ ...fallback.resumo, analise_falhou: true, erro_detalhe: detail });
-      setGrupos(fallback.grupos);
-      setPhase('review');
-    } finally {
-      setProcessing(false);
-    }
+    const local = analisarLoteLocal(ocrResults, empresasList);
+    setItems(local.itens);
+    setGrupos(local.grupos);
+    setResumo(local.resumo);
+    setPhase('review');
+    setProcessing(false);
+
+  // Refino opcional no servidor (duplicidade no banco etc.) — não bloqueia a tela.
+    void (async () => {
+      try {
+        const payload = ocrResults.map((r) => ({
+          temp_id: r.temp_id,
+          filename: r.filename,
+          file_hash: r.file_hash,
+          texto_completo: (r.texto_completo || '').slice(0, 4000),
+          valor: r.valor ?? null,
+          data_vencimento: r.data_vencimento ?? null,
+          codigo_barras: r.codigo_barras ?? null,
+          qr_code_pix: r.qr_code_pix ?? null,
+          competencia: r.competencia ?? null,
+          tipo_documento: r.tipo_documento ?? null,
+          descricao_sugerida: r.descricao_sugerida ?? null,
+          cnpj: r.cnpj ?? null,
+          empresa_id: r.empresa_id ?? null,
+        }));
+        const analise = await loteAnalisarComRetry(payload, 1);
+        const merged = (analise.data.itens || []).map((row: any) => {
+          const src = ocrResults.find((o) => o.temp_id === row.temp_id)!;
+          return {
+            ...src,
+            ...row,
+            steps: {
+              ...src.steps,
+              empresa: Boolean(row.empresa_id),
+            },
+            pronto: row.pronto,
+            ja_cadastrada: row.ja_cadastrada,
+            cnpj_exibicao: row.cnpj_exibicao,
+            cnpj_novo: row.cnpj_novo,
+            arquivo_repetido_lote: row.arquivo_repetido_lote,
+            selected: Boolean(
+              row.pronto && !row.arquivo_repetido_lote && !row.ja_cadastrada,
+            ),
+          };
+        });
+        setItems(merged);
+        setGrupos(analise.data.grupos || []);
+        setResumo(analise.data.resumo);
+      } catch {
+        // Revisão local já está na tela — falha silenciosa.
+      }
+    })();
   };
 
   const updateItem = (tempId: string, patch: Partial<LoteItem>) => {
@@ -620,17 +744,6 @@ export default function ImportarGuiasScreen() {
                   <SummaryChip label="Duplicatas" value={String(resumo.duplicatas)} color="#D97706" />
                   <SummaryChip label="Sem empresa" value={String(resumo.sem_empresa)} color="#DC2626" />
                 </View>
-                {resumo.analise_falhou && (
-                  <View style={[styles.infoBanner, { backgroundColor: '#FFFBEB', borderColor: '#FCD34D' }]}>
-                    <Ionicons name="warning" size={20} color="#B45309" />
-                    <Text style={[styles.infoBannerText, { color: '#92400E' }]}>
-                      A análise automática no servidor falhou — usamos uma revisão local com os dados
-                      lidos pelo OCR e pistas do nome do arquivo (ex.: ICMS, competência). Revise os
-                      campos e confirme normalmente.
-                      {resumo.erro_detalhe ? `\n\nDetalhe: ${resumo.erro_detalhe}` : ''}
-                    </Text>
-                  </View>
-                )}
                 {(resumo.ja_cadastradas > 0 || resumo.duplicatas > 0) && (
                   <View style={styles.infoBanner}>
                     <Ionicons name="information-circle" size={20} color="#1E40AF" />
@@ -731,8 +844,7 @@ export default function ImportarGuiasScreen() {
                       !item.cnpj &&
                       !item.valor &&
                       !item.data_vencimento &&
-                      !item.codigo_barras &&
-                      !item.tipo_documento;
+                      !item.codigo_barras;
                     if (ocrVazio && item.status !== 'error') {
                       return (
                         <Text style={styles.warnText}>
@@ -748,6 +860,12 @@ export default function ImportarGuiasScreen() {
                     }
                     return null;
                   })()}
+                  {item.empresa_id && item.match_confianca === 'media' && (
+                    <Text style={styles.linkedText}>Empresa sugerida pelo nome do arquivo</Text>
+                  )}
+                  {!item.empresa_id && item.empresa_hint && (
+                    <Text style={styles.hintText}>Pelo arquivo: {item.empresa_hint}</Text>
+                  )}
                   {item.ja_cadastrada && item.empresa_nome && (
                     <Text style={styles.linkedText}>Empresa vinculada pela guia existente</Text>
                   )}
@@ -778,19 +896,21 @@ export default function ImportarGuiasScreen() {
                   })()}
                   {!item.empresa_id && empresas.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                      {empresas.slice(0, 5).map((e) => (
+                      {empresasSugeridasParaItem(item, empresas).slice(0, 8).map((e, idx) => (
                         <TouchableOpacity
                           key={e.empresa_id}
-                          style={styles.empChip}
+                          style={[styles.empChip, idx === 0 && styles.empChipSuggest]}
                           onPress={() =>
                             updateItem(item.temp_id, {
                               empresa_id: e.empresa_id,
                               empresa_nome: e.nome_fantasia || e.razao_social,
+                              match_confianca: idx === 0 ? 'media' : 'nenhuma',
+                              steps: { ...item.steps, empresa: true },
                             })
                           }
                         >
-                          <Text style={styles.empChipText} numberOfLines={1}>
-                            {(e.nome_fantasia || e.razao_social).slice(0, 18)}
+                          <Text style={[styles.empChipText, idx === 0 && styles.empChipTextSuggest]} numberOfLines={1}>
+                            {(e.nome_fantasia || e.razao_social).slice(0, 22)}
                           </Text>
                         </TouchableOpacity>
                       ))}
@@ -987,6 +1107,7 @@ const styles = StyleSheet.create({
   infoBannerText: { flex: 1, fontSize: 13, color: '#1E3A8A', lineHeight: 18 },
   cnpjText: { fontSize: 11, color: '#64748B', marginTop: 2 },
   warnText: { fontSize: 11, color: '#B45309', marginTop: 2, fontWeight: '600' },
+  hintText: { fontSize: 11, color: '#0369A1', marginTop: 2, fontWeight: '600' },
   linkedText: { fontSize: 11, color: '#059669', marginTop: 2, fontWeight: '600' },
   groupCard: {
     backgroundColor: '#F0FDF4',
@@ -1049,7 +1170,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginRight: 4,
   },
+  empChipSuggest: {
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#6EE7B7',
+  },
   empChipText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
+  empChipTextSuggest: { color: '#047857' },
   cnpjBanner: {
     flexDirection: 'row',
     alignItems: 'center',
