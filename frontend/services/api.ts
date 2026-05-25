@@ -97,8 +97,6 @@ export const cnpjAPI = {
 // Empresas
 export const empresasAPI = {
   criar: (data: { cnpj: string }) => api.post('/empresas', data),
-  criarQuick: (data: { nome: string; cnpj?: string }) =>
-    api.post('/empresas/quick', data),
   listar: (params?: { search?: string }) => api.get('/empresas', { params }),
   obter: (empresaId: string) => api.get(`/empresas/${empresaId}`),
   editar: (empresaId: string, data: any) => api.patch(`/empresas/${empresaId}`, data),
@@ -197,7 +195,7 @@ export const ocrAPI = {
   processar: (imageBase64: string) =>
     api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 120000 }),
   loteAnalisar: (itens: unknown[]) =>
-    api.post('/ocr/lote/analisar', { itens }, { timeout: 120000 }),
+    api.post('/ocr/lote/analisar', { itens }, { timeout: 60000 }),
   loteHash: (imageBase64: string) =>
     api.post('/ocr/lote/hash', { image_base64: imageBase64 }),
 };

@@ -54,8 +54,6 @@ type LoteItem = {
   pronto?: boolean;
   ja_cadastrada?: boolean;
   cnpj_exibicao?: string;
-  cnpj_novo?: boolean;
-  empresa_hint?: string;
   arquivo_repetido_lote?: boolean;
   selected: boolean;
   ignorar_duplicidade: boolean;
@@ -75,260 +73,6 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function onlyDigits(v?: string | null) {
-  return (v || '').replace(/\D/g, '');
-}
-
-function formatCnpj(digits: string) {
-  if (digits.length !== 14) return undefined;
-  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`;
-}
-
-function validarCnpj(cnpj: string): boolean {
-  const c = onlyDigits(cnpj);
-  if (c.length !== 14 || c === c[0].repeat(14)) return false;
-  const calc = (nums: string, pesos: number[]) => {
-    const s = nums.split('').reduce((acc, n, i) => acc + Number(n) * pesos[i], 0);
-    const r = s % 11;
-    return r < 2 ? 0 : 11 - r;
-  };
-  const p1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
-  const p2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
-  if (calc(c.slice(0, 12), p1) !== Number(c[12])) return false;
-  if (calc(c.slice(0, 13), p2) !== Number(c[13])) return false;
-  return true;
-}
-
-function hintsFromFilename(filename?: string) {
-  if (!filename) return {} as Record<string, string>;
-  const base = filename.replace(/\.[^.]+$/, '').toUpperCase();
-  const hints: Record<string, string> = {};
-  for (const tipo of ['ICMS', 'DAS', 'DARF', 'ISS', 'INSS', 'FGTS', 'GPS', 'GRU', 'GARE', 'DAE']) {
-    if (base.includes(tipo)) {
-      hints.tipo_documento = tipo;
-      break;
-    }
-  }
-  if (base.includes('PARCELAMENTO')) {
-    hints.tipo_documento = 'PARCELAMENTO';
-    hints.descricao_sugerida = 'Parcelamento';
-  }
-  const comp = base.match(/\b(\d{2})[\./](\d{4})\b/);
-  if (comp) hints.competencia = `${comp[1]}/${comp[2]}`;
-  return hints;
-}
-
-function normalizeName(s: string) {
-  return s
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-const STOP_TOKENS = new Set([
-  'LTDA', 'ME', 'EPP', 'EIRELI', 'SA', 'CIA', 'DE', 'DA', 'DO', 'DOS', 'DAS', 'E',
-  'INDUSTRIA', 'COMERCIO', 'COM', 'IND', 'EQUIP', 'EQUIPAMENTOS',
-]);
-
-function significantTokens(name: string): string[] {
-  return normalizeName(name)
-    .split(' ')
-    .filter((t) => t.length >= 3 && !STOP_TOKENS.has(t));
-}
-
-function extractCompanyFromFilename(filename?: string) {
-  if (!filename) return '';
-  let base = filename.replace(/\.[^.]+$/i, '');
-  base = base.replace(/^GUIA\s+/i, '');
-  base = base.replace(/^(ICMS\s*A?\s*|PARCELAMENTO\s*\d*\s*)/i, '');
-  base = base.replace(/\s+\d{2}[./]\d{4}\s*$/i, '');
-  base = base.replace(/^\d+\s*[-–]?\s*/i, '');
-  return base.trim();
-}
-
-function matchEmpresaLocal(
-  empresasList: any[],
-  item: Pick<LoteItem, 'cnpj' | 'filename' | 'texto_completo'>,
-) {
-  const cnpjDigits = onlyDigits(item.cnpj);
-  if (cnpjDigits.length === 14) {
-    const emp = empresasList.find((e) => onlyDigits(e.cnpj) === cnpjDigits);
-    if (emp) return { emp, conf: 'alta' as const };
-  }
-
-  const textoNorm = normalizeName(`${item.filename || ''} ${item.texto_completo || ''}`);
-  const nomeArquivo = extractCompanyFromFilename(item.filename);
-  const nomeArquivoNorm = normalizeName(nomeArquivo);
-  const fileTokens = significantTokens(nomeArquivo || item.filename || '');
-
-  let best: any = null;
-  let bestScore = 0;
-
-  for (const emp of empresasList) {
-    for (const campo of [emp.nome_fantasia, emp.razao_social]) {
-      if (!campo) continue;
-      const nomeNorm = normalizeName(campo);
-      if (nomeNorm.length < 5) continue;
-
-      if (textoNorm.includes(nomeNorm) && nomeNorm.length >= 8) {
-        return { emp, conf: 'alta' as const };
-      }
-
-      if (nomeArquivoNorm.length >= 5) {
-        if (nomeNorm.includes(nomeArquivoNorm) || nomeArquivoNorm.includes(nomeNorm)) {
-          const score = Math.min(nomeNorm.length, nomeArquivoNorm.length) / Math.max(nomeNorm.length, nomeArquivoNorm.length);
-          if (score > bestScore) {
-            best = emp;
-            bestScore = score;
-          }
-        }
-      }
-
-      const empTokens = significantTokens(campo);
-      if (empTokens.length >= 2 && fileTokens.length >= 2) {
-        const hits = empTokens.filter((t) => fileTokens.includes(t)).length;
-        const score = hits / empTokens.length;
-        if (hits >= 2 && score >= 0.45 && score > bestScore) {
-          best = emp;
-          bestScore = score;
-        }
-      }
-    }
-  }
-
-  if (best && bestScore >= 0.45) {
-    return { emp: best, conf: bestScore >= 0.75 ? ('alta' as const) : ('media' as const) };
-  }
-  return { emp: null, conf: 'nenhuma' as const };
-}
-
-function agruparItensLocal(itens: LoteItem[]) {
-  const map = new Map<string, LoteItem[]>();
-  for (const it of itens) {
-    const hint = it.empresa_hint || extractCompanyFromFilename(it.filename);
-    const key = it.empresa_id || hint || it.temp_id;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(it);
-  }
-  return Array.from(map.entries()).map(([key, lista]) => ({
-    empresa_id: lista[0]?.empresa_id || null,
-    empresa_nome:
-      lista[0]?.empresa_nome ||
-      lista[0]?.empresa_hint ||
-      extractCompanyFromFilename(lista[0]?.filename) ||
-      'Identificar empresa',
-    quantidade: lista.length,
-    itens: lista.map((x) => x.temp_id),
-  }));
-}
-
-function analisarLoteLocal(items: LoteItem[], empresasList: any[]) {
-  const hashesVistos = new Set<string>();
-
-  const processados = items.map((item) => {
-    const hints = hintsFromFilename(item.filename);
-    const tipo = item.tipo || item.tipo_documento || hints.tipo_documento || 'OUTROS';
-    const competencia = item.competencia || hints.competencia;
-    const cnpjDigits = onlyDigits(item.cnpj);
-    const nomeArquivo = extractCompanyFromFilename(item.filename);
-
-    const match = matchEmpresaLocal(empresasList, item);
-    let empresa_id = item.empresa_id || match.emp?.empresa_id;
-    let empresa_nome = item.empresa_nome || match.emp?.nome_fantasia || match.emp?.razao_social;
-    let match_confianca = match.conf;
-
-    let arquivo_repetido_lote = false;
-    if (item.file_hash) {
-      if (hashesVistos.has(item.file_hash)) arquivo_repetido_lote = true;
-      else hashesVistos.add(item.file_hash);
-    }
-
-    const updated: LoteItem = {
-      ...item,
-      tipo,
-      competencia,
-      descricao_sugerida: item.descricao_sugerida || hints.descricao_sugerida || tipo,
-      tipo_documento: item.tipo_documento || hints.tipo_documento,
-      empresa_id,
-      empresa_nome,
-      match_confianca,
-      cnpj_exibicao: formatCnpj(cnpjDigits),
-      cnpj_novo: Boolean(!empresa_id && cnpjDigits.length === 14 && validarCnpj(cnpjDigits)),
-      alertas_duplicidade: arquivo_repetido_lote ? ['Arquivo duplicado no mesmo lote.'] : [],
-      tem_duplicidade: arquivo_repetido_lote,
-      ja_cadastrada: item.ja_cadastrada || false,
-      arquivo_repetido_lote,
-      steps: {
-        ...item.steps,
-        empresa: Boolean(empresa_id),
-        tipo: Boolean(tipo && tipo !== 'OUTROS'),
-      },
-    };
-    updated.pronto = Boolean(
-      updated.empresa_id && updated.valor && (updated.data_vencimento_iso || updated.data_vencimento),
-    );
-    updated.selected = Boolean(
-      updated.pronto && !updated.arquivo_repetido_lote && !updated.ja_cadastrada,
-    );
-    if (!updated.empresa_id && nomeArquivo) {
-      updated.empresa_hint = nomeArquivo;
-    }
-    return updated;
-  });
-
-  const cnpjsNovos = new Set(
-    processados.filter((i) => i.cnpj_novo && i.cnpj).map((i) => onlyDigits(i.cnpj)),
-  );
-
-  return {
-    itens: processados,
-    grupos: agruparItensLocal(processados),
-    resumo: {
-      total: processados.length,
-      prontos: processados.filter((i) => i.pronto).length,
-      duplicatas: processados.filter((i) => i.tem_duplicidade).length,
-      sem_empresa: processados.filter((i) => !i.empresa_id).length,
-      ja_cadastradas: processados.filter((i) => i.ja_cadastrada).length,
-      cnpjs_novos_unicos: cnpjsNovos.size,
-    },
-  };
-}
-
-function empresasSugeridasParaItem(item: LoteItem, empresasList: any[]) {
-  const match = matchEmpresaLocal(empresasList, item);
-  if (!match.emp) return empresasList;
-  return [
-    match.emp,
-    ...empresasList.filter((e) => e.empresa_id !== match.emp!.empresa_id),
-  ];
-}
-
-async function loteAnalisarComRetry(payload: unknown[], retries = 2) {
-  let lastErr: any;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      return await ocrAPI.loteAnalisar(payload);
-    } catch (e: any) {
-      lastErr = e;
-      const status = e?.response?.status;
-      const retryable =
-        !status ||
-        status >= 502 ||
-        e?.code === 'ECONNABORTED' ||
-        e?.message === 'Network Error';
-      if (attempt < retries && retryable) {
-        await sleep(2500 * (attempt + 1));
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw lastErr;
-}
-
 export default function ImportarGuiasScreen() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -341,9 +85,6 @@ export default function ImportarGuiasScreen() {
   const [confirming, setConfirming] = useState(false);
   const [enviarNotificacoes, setEnviarNotificacoes] = useState(true);
   const [resultado, setResultado] = useState<any>(null);
-  const [creatingCnpjs, setCreatingCnpjs] = useState<Set<string>>(new Set());
-  const [creatingAll, setCreatingAll] = useState(false);
-  const [cnpjDrafts, setCnpjDrafts] = useState<Record<string, string>>({});
 
   const progressPct = useMemo(() => {
     if (!items.length) return 0;
@@ -351,20 +92,15 @@ export default function ImportarGuiasScreen() {
     return Math.round((done / items.length) * 100);
   }, [items]);
 
+  const selectedCount = items.filter((i) => i.selected && i.pronto).length;
+
   const loadEmpresas = useCallback(async () => {
     const res = await empresasAPI.listar();
     setEmpresas(res.data || []);
   }, []);
 
   const processFiles = async (files: PickedBulkFile[]) => {
-    let empresasList: any[] = [];
-    try {
-      const empRes = await empresasAPI.listar();
-      empresasList = empRes.data || [];
-      setEmpresas(empresasList);
-    } catch {
-      showToast('Não foi possível carregar empresas — vincule manualmente se necessário', 'info');
-    }
+    await loadEmpresas();
     const initial: LoteItem[] = files.map((f) => ({
       temp_id: f.id,
       filename: f.name,
@@ -400,17 +136,13 @@ export default function ImportarGuiasScreen() {
           ocrAPI.processar(it.base64),
         ]);
         const d = ocrRes.data;
-        const hints = hintsFromFilename(it.filename);
         await sleep(200);
-
-        const tipoDoc = d.tipo_documento || hints.tipo_documento;
-        const competencia = d.competencia || hints.competencia;
 
         const steps: Record<StepKey, boolean> = {
           empresa: false,
           valor: Boolean(d.valor),
           vencimento: Boolean(d.data_vencimento),
-          tipo: Boolean(tipoDoc),
+          tipo: Boolean(d.tipo_documento),
           cnpj: Boolean(d.cnpj),
           barcode: Boolean(d.codigo_barras),
         };
@@ -432,9 +164,9 @@ export default function ImportarGuiasScreen() {
           data_vencimento: d.data_vencimento,
           codigo_barras: d.codigo_barras,
           qr_code_pix: d.qr_code_pix,
-          competencia,
-          tipo_documento: tipoDoc,
-          descricao_sugerida: d.descricao_sugerida || hints.descricao_sugerida,
+          competencia: d.competencia,
+          tipo_documento: d.tipo_documento,
+          descricao_sugerida: d.descricao_sugerida,
           cnpj: d.cnpj,
         });
         setItems((prev) =>
@@ -457,270 +189,62 @@ export default function ImportarGuiasScreen() {
       }
     }
 
-    const local = analisarLoteLocal(ocrResults, empresasList);
-    setItems(local.itens);
-    setGrupos(local.grupos);
-    setResumo(local.resumo);
-    setPhase('review');
-    setProcessing(false);
-
-  // Refino opcional no servidor (duplicidade no banco etc.) — não bloqueia a tela.
-    void (async () => {
-      try {
-        const payload = ocrResults.map((r) => ({
+    try {
+      const analise = await ocrAPI.loteAnalisar(
+        ocrResults.map((r) => ({
           temp_id: r.temp_id,
           filename: r.filename,
           file_hash: r.file_hash,
-          texto_completo: (r.texto_completo || '').slice(0, 4000),
-          valor: r.valor ?? null,
-          data_vencimento: r.data_vencimento ?? null,
-          codigo_barras: r.codigo_barras ?? null,
-          qr_code_pix: r.qr_code_pix ?? null,
-          competencia: r.competencia ?? null,
-          tipo_documento: r.tipo_documento ?? null,
-          descricao_sugerida: r.descricao_sugerida ?? null,
-          cnpj: r.cnpj ?? null,
-          empresa_id: r.empresa_id ?? null,
-        }));
-        const analise = await loteAnalisarComRetry(payload, 1);
-        const merged = (analise.data.itens || []).map((row: any) => {
-          const src = ocrResults.find((o) => o.temp_id === row.temp_id)!;
-          return {
-            ...src,
-            ...row,
-            steps: {
-              ...src.steps,
-              empresa: Boolean(row.empresa_id),
-            },
-            pronto: row.pronto,
-            ja_cadastrada: row.ja_cadastrada,
-            cnpj_exibicao: row.cnpj_exibicao,
-            cnpj_novo: row.cnpj_novo,
-            arquivo_repetido_lote: row.arquivo_repetido_lote,
-            selected: Boolean(
-              row.pronto && !row.arquivo_repetido_lote && !row.ja_cadastrada,
-            ),
-          };
-        });
-        setItems(merged);
-        setGrupos(analise.data.grupos || []);
-        setResumo(analise.data.resumo);
-      } catch {
-        // Revisão local já está na tela — falha silenciosa.
-      }
-    })();
+          texto_completo: r.texto_completo,
+          valor: r.valor,
+          data_vencimento: r.data_vencimento,
+          codigo_barras: r.codigo_barras,
+          qr_code_pix: r.qr_code_pix,
+          competencia: r.competencia,
+          tipo_documento: r.tipo_documento,
+          descricao_sugerida: r.descricao_sugerida,
+          cnpj: r.cnpj,
+          empresa_id: r.empresa_id,
+        })),
+      );
+      const merged = (analise.data.itens || []).map((row: any) => {
+        const src = ocrResults.find((o) => o.temp_id === row.temp_id)!;
+        return {
+          ...src,
+          ...row,
+          steps: {
+            ...src.steps,
+            empresa: Boolean(row.empresa_id),
+          },
+          pronto: row.pronto,
+          ja_cadastrada: row.ja_cadastrada,
+          cnpj_exibicao: row.cnpj_exibicao,
+          arquivo_repetido_lote: row.arquivo_repetido_lote,
+          selected: Boolean(
+            row.pronto && !row.arquivo_repetido_lote && !row.ja_cadastrada,
+          ),
+        };
+      });
+      setItems(merged);
+      setGrupos(analise.data.grupos || []);
+      setResumo(analise.data.resumo);
+      setPhase('review');
+    } catch {
+      showToast('Erro na análise do lote', 'error');
+      setPhase('review');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const updateItem = (tempId: string, patch: Partial<LoteItem>) => {
+    setItems((prev) =>
+      prev.map((i) => (i.temp_id === tempId ? { ...i, ...patch, pronto: undefined } : i)),
+    );
   };
 
   const recalcPronto = (it: LoteItem) =>
     Boolean(it.empresa_id && it.valor && (it.data_vencimento_iso || it.data_vencimento));
-
-  const updateItem = (tempId: string, patch: Partial<LoteItem>) => {
-    setItems((prev) =>
-      prev.map((i) => {
-        if (i.temp_id !== tempId) return i;
-        const updated = { ...i, ...patch };
-        updated.pronto = recalcPronto(updated);
-        return updated;
-      }),
-    );
-  };
-
-  // CNPJs únicos detectados pelo OCR que ainda não estão cadastrados
-  const cnpjsNovosUnicos = useMemo(() => {
-    const map = new Map<string, { cnpj: string; cnpj_exibicao?: string; count: number }>();
-    items.forEach((i) => {
-      if (!i.cnpj_novo || !i.cnpj) return;
-      const key = onlyDigits(i.cnpj);
-      if (!key) return;
-      const cur = map.get(key);
-      if (cur) cur.count += 1;
-      else map.set(key, { cnpj: i.cnpj, cnpj_exibicao: i.cnpj_exibicao, count: 1 });
-    });
-    return Array.from(map.values());
-  }, [items]);
-
-  const selectedCount = items.filter((i) => i.selected && recalcPronto(i)).length;
-
-  const resumoLive = useMemo(
-    () => ({
-      total: items.length,
-      prontos: items.filter((i) => recalcPronto(i)).length,
-      duplicatas: items.filter((i) => i.tem_duplicidade).length,
-      sem_empresa: items.filter((i) => !i.empresa_id).length,
-      ja_cadastradas: items.filter((i) => i.ja_cadastrada).length,
-      cnpjs_novos_unicos: cnpjsNovosUnicos.length,
-    }),
-    [items, cnpjsNovosUnicos],
-  );
-
-  const gruposLive = useMemo(() => agruparItensLocal(items), [items]);
-
-  const aplicarEmpresaNasLinhasDoCnpj = (cnpjDigits: string, empresa: any) => {
-    setItems((prev) =>
-      prev.map((row) => {
-        if (onlyDigits(row.cnpj) !== cnpjDigits) return row;
-        const updated: LoteItem = {
-          ...row,
-          empresa_id: empresa.empresa_id,
-          empresa_nome: empresa.nome_fantasia || empresa.razao_social,
-          match_confianca: 'alta',
-          cnpj_novo: false,
-          steps: { ...row.steps, empresa: true },
-        };
-        updated.pronto = recalcPronto(updated);
-        if (updated.pronto && !updated.tem_duplicidade && !updated.arquivo_repetido_lote) {
-          updated.selected = true;
-        }
-        return updated;
-      }),
-    );
-  };
-
-  const cadastrarEmpresaPorCnpj = useCallback(
-    async (cnpjBruto: string): Promise<{ ok: boolean; empresa?: any; erro?: string }> => {
-      const digits = onlyDigits(cnpjBruto);
-      if (digits.length !== 14) {
-        return { ok: false, erro: 'CNPJ inválido' };
-      }
-      setCreatingCnpjs((prev) => new Set(prev).add(digits));
-      try {
-        const res = await empresasAPI.criar({ cnpj: digits });
-        const emp = res.data;
-        setEmpresas((prev) => {
-          if (prev.some((e) => e.empresa_id === emp.empresa_id)) return prev;
-          return [...prev, emp];
-        });
-        aplicarEmpresaNasLinhasDoCnpj(digits, emp);
-        return { ok: true, empresa: emp };
-      } catch (e: any) {
-        // Se já existia (erro 400 "Empresa já cadastrada"), tenta achar pela lista atualizada
-        const detail: string = e?.response?.data?.detail || '';
-        if (e?.response?.status === 400 && /j[aá] cadastrada/i.test(detail)) {
-          try {
-            const lista = await empresasAPI.listar();
-            const arr = lista.data || [];
-            setEmpresas(arr);
-            const found = arr.find((x: any) => onlyDigits(x.cnpj) === digits);
-            if (found) {
-              aplicarEmpresaNasLinhasDoCnpj(digits, found);
-              return { ok: true, empresa: found };
-            }
-          } catch {}
-        }
-        return { ok: false, erro: detail || 'Erro ao cadastrar empresa' };
-      } finally {
-        setCreatingCnpjs((prev) => {
-          const n = new Set(prev);
-          n.delete(digits);
-          return n;
-        });
-      }
-    },
-    [],
-  );
-
-  const handleCadastrarUmCnpj = async (cnpj: string) => {
-    const r = await cadastrarEmpresaPorCnpj(cnpj);
-    if (r.ok && r.empresa) {
-      const nome = r.empresa.nome_fantasia || r.empresa.razao_social || 'Empresa';
-      showToast(`${nome} cadastrada e vinculada`, 'success');
-    } else {
-      showToast(r.erro || 'Não foi possível cadastrar a empresa', 'error');
-    }
-  };
-
-  const vincularEmpresaNasLinhas = (empresa: any, hint?: string, tempId?: string) => {
-    setItems((prev) =>
-      prev.map((row) => {
-        const sameHint = hint && row.empresa_hint === hint;
-        const sameRow = tempId && row.temp_id === tempId;
-        if (!sameRow && !sameHint) return row;
-        const updated: LoteItem = {
-          ...row,
-          empresa_id: empresa.empresa_id,
-          empresa_nome: empresa.nome_fantasia || empresa.razao_social,
-          match_confianca: 'alta',
-          cnpj_novo: false,
-          steps: { ...row.steps, empresa: true },
-        };
-        updated.pronto = recalcPronto(updated);
-        if (updated.pronto && !updated.tem_duplicidade && !updated.arquivo_repetido_lote) {
-          updated.selected = true;
-        }
-        return updated;
-      }),
-    );
-  };
-
-  const handleCadastrarManualRow = async (item: LoteItem) => {
-    const draft = cnpjDrafts[item.temp_id] || '';
-    const digits = onlyDigits(draft);
-    if (digits.length !== 14 || !validarCnpj(digits)) {
-      showToast('Informe um CNPJ válido com 14 dígitos', 'error');
-      return;
-    }
-    const r = await cadastrarEmpresaPorCnpj(digits);
-    if (r.ok && r.empresa) {
-      vincularEmpresaNasLinhas(r.empresa, item.empresa_hint, item.temp_id);
-      const nome = r.empresa.nome_fantasia || r.empresa.razao_social || item.empresa_hint;
-      showToast(`${nome} cadastrada e vinculada`, 'success');
-    } else {
-      showToast(r.erro || 'Não foi possível cadastrar a empresa', 'error');
-    }
-  };
-
-  const handleCadastrarPorNomeRow = async (item: LoteItem) => {
-    const nome = (item.empresa_hint || extractCompanyFromFilename(item.filename) || '').trim();
-    if (nome.length < 3) {
-      showToast('Não foi possível identificar o nome da empresa pelo arquivo', 'error');
-      return;
-    }
-    const tempKey = `__nome_${item.temp_id}`;
-    setCreatingCnpjs((prev) => new Set(prev).add(tempKey));
-    try {
-      const draft = cnpjDrafts[item.temp_id] || '';
-      const digits = onlyDigits(draft);
-      const cnpjOpcional = digits.length === 14 && validarCnpj(digits) ? digits : undefined;
-      const res = await empresasAPI.criarQuick({ nome, cnpj: cnpjOpcional });
-      const emp = res.data;
-      setEmpresas((prev) => {
-        if (prev.some((e) => e.empresa_id === emp.empresa_id)) return prev;
-        return [...prev, emp];
-      });
-      vincularEmpresaNasLinhas(emp, item.empresa_hint, item.temp_id);
-      const nomeFinal = emp.nome_fantasia || emp.razao_social || nome;
-      showToast(`${nomeFinal} cadastrada e vinculada`, 'success');
-    } catch (e: any) {
-      showToast(e?.response?.data?.detail || 'Não foi possível cadastrar a empresa', 'error');
-    } finally {
-      setCreatingCnpjs((prev) => {
-        const n = new Set(prev);
-        n.delete(tempKey);
-        return n;
-      });
-    }
-  };
-
-  const handleCadastrarTodasEmpresasNovas = async () => {
-    if (!cnpjsNovosUnicos.length) return;
-    setCreatingAll(true);
-    try {
-      const results = await Promise.all(
-        cnpjsNovosUnicos.map((c) => cadastrarEmpresaPorCnpj(c.cnpj)),
-      );
-      const ok = results.filter((r) => r.ok).length;
-      const fail = results.length - ok;
-      if (ok && !fail) {
-        showToast(`${ok} empresa(s) cadastrada(s) e vinculada(s)`, 'success');
-      } else if (ok && fail) {
-        showToast(`${ok} cadastrada(s), ${fail} falharam`, 'info');
-      } else {
-        showToast('Não foi possível cadastrar as empresas novas', 'error');
-      }
-    } finally {
-      setCreatingAll(false);
-    }
-  };
 
   const handleConfirm = async () => {
     const toSend = items.filter((i) => i.selected && recalcPronto(i));
@@ -831,75 +355,32 @@ export default function ImportarGuiasScreen() {
 
         {phase === 'review' && (
           <View>
-            <>
-              <View style={styles.summaryRow}>
-                <SummaryChip label="Total" value={String(resumoLive.total)} />
-                <SummaryChip label="Prontas" value={String(resumoLive.prontos)} color="#059669" />
-                <SummaryChip label="Duplicatas" value={String(resumoLive.duplicatas)} color="#D97706" />
-                <SummaryChip label="Sem empresa" value={String(resumoLive.sem_empresa)} color="#DC2626" />
-              </View>
-              {resumoLive.sem_empresa > 0 && (
-                <View style={[styles.infoBanner, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
-                  <Ionicons name="business" size={20} color="#1D4ED8" />
-                  <Text style={[styles.infoBannerText, { color: '#1E3A8A' }]}>
-                    {resumoLive.sem_empresa === 1 ? '1 guia sem empresa.' : `${resumoLive.sem_empresa} guias sem empresa.`}
-                    {' '}Você pode cadastrar pelo CNPJ (dados vêm da Receita) ou clicar em
-                    {' '}“Cadastrar só com o nome” para criar a empresa rapidamente — você completa o CNPJ depois.
-                  </Text>
+            {resumo && (
+              <>
+                <View style={styles.summaryRow}>
+                  <SummaryChip label="Total" value={String(resumo.total)} />
+                  <SummaryChip label="Prontas" value={String(resumo.prontos)} color="#059669" />
+                  <SummaryChip label="Duplicatas" value={String(resumo.duplicatas)} color="#D97706" />
+                  <SummaryChip label="Sem empresa" value={String(resumo.sem_empresa)} color="#DC2626" />
                 </View>
-              )}
-              {(resumoLive.ja_cadastradas > 0 || resumoLive.duplicatas > 0) && (
-                <View style={styles.infoBanner}>
-                  <Ionicons name="information-circle" size={20} color="#1E40AF" />
-                  <Text style={styles.infoBannerText}>
-                    {resumoLive.ja_cadastradas > 0
-                      ? `${resumoLive.ja_cadastradas} guia(s) já existem no sistema (mesmo código de barras). A empresa foi vinculada automaticamente. Para testar de novo, use arquivos novos ou exclua as guias antigas.`
-                      : 'Alguns itens parecem repetidos neste lote.'}
-                  </Text>
-                </View>
-              )}
-            </>
-
-            {cnpjsNovosUnicos.length > 0 && (
-              <View style={styles.cnpjBanner}>
-                <View style={styles.cnpjBannerIcon}>
-                  <Ionicons name="sparkles" size={20} color="#047857" />
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.cnpjBannerTitle}>
-                    {cnpjsNovosUnicos.length === 1
-                      ? '1 empresa nova detectada'
-                      : `${cnpjsNovosUnicos.length} empresas novas detectadas`}
-                  </Text>
-                  <Text style={styles.cnpjBannerSub}>
-                    O OCR identificou {cnpjsNovosUnicos.length === 1 ? 'um CNPJ válido' : 'CNPJs válidos'} que ainda não está
-                    {cnpjsNovosUnicos.length === 1 ? '' : 'ão'} na sua base. Cadastre em 1 clique — os dados (razão social, nome fantasia) vêm da Receita.
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.cnpjBannerBtn, creatingAll && { opacity: 0.6 }]}
-                  onPress={handleCadastrarTodasEmpresasNovas}
-                  disabled={creatingAll}
-                >
-                  {creatingAll ? (
-                    <ActivityIndicator color="#FFF" size="small" />
-                  ) : (
-                    <>
-                      <Ionicons name="add-circle" size={16} color="#FFF" />
-                      <Text style={styles.cnpjBannerBtnText}>
-                        {cnpjsNovosUnicos.length === 1 ? 'Cadastrar' : 'Cadastrar todas'}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </View>
+                {(resumo.ja_cadastradas > 0 || resumo.duplicatas > 0) && (
+                  <View style={styles.infoBanner}>
+                    <Ionicons name="information-circle" size={20} color="#1E40AF" />
+                    <Text style={styles.infoBannerText}>
+                      {resumo.ja_cadastradas > 0
+                        ? `${resumo.ja_cadastradas} guia(s) já existem no sistema (mesmo código de barras). A empresa foi vinculada automaticamente. Para testar de novo, use arquivos novos ou exclua as guias antigas.`
+                        : 'Alguns itens parecem repetidos neste lote.'}
+                    </Text>
+                  </View>
+                )}
+              </>
             )}
 
-            {gruposLive.length > 0 && (
+            {grupos.length > 0 && (
               <View style={styles.groupCard}>
                 <Text style={styles.groupTitle}>Agrupamento automático</Text>
-                {gruposLive.map((g) => (
-                  <Text key={`${g.empresa_id || g.empresa_nome}-${g.quantidade}`} style={styles.groupLine}>
+                {grupos.map((g) => (
+                  <Text key={g.empresa_id || 'x'} style={styles.groupLine}>
                     • {g.empresa_nome} — {g.quantidade} guia(s)
                   </Text>
                 ))}
@@ -940,35 +421,13 @@ export default function ImportarGuiasScreen() {
                 </TouchableOpacity>
                 <View style={{ flex: 1.2 }}>
                   <Text style={styles.cellTitle} numberOfLines={1}>
-                    {item.empresa_nome || item.filename || '—'}
+                    {item.empresa_nome || '—'}
                   </Text>
-                  {(() => {
-                    const ocrVazio =
-                      !item.cnpj &&
-                      !item.valor &&
-                      !item.data_vencimento &&
-                      !item.codigo_barras;
-                    if (ocrVazio && item.status !== 'error') {
-                      return (
-                        <Text style={styles.warnText}>
-                          Não conseguimos ler este arquivo automaticamente. Preencha manualmente.
-                        </Text>
-                      );
-                    }
-                    if (item.cnpj_exibicao) {
-                      return <Text style={styles.cnpjText}>CNPJ: {item.cnpj_exibicao}</Text>;
-                    }
-                    if (item.cnpj) {
-                      return <Text style={styles.cnpjText}>CNPJ detectado (revise)</Text>;
-                    }
-                    return null;
-                  })()}
-                  {item.empresa_id && item.match_confianca === 'media' && (
-                    <Text style={styles.linkedText}>Empresa sugerida pelo nome do arquivo</Text>
-                  )}
-                  {!item.empresa_id && item.empresa_hint && (
-                    <Text style={styles.hintText}>Pelo arquivo: {item.empresa_hint}</Text>
-                  )}
+                  {item.cnpj_exibicao ? (
+                    <Text style={styles.cnpjText}>CNPJ: {item.cnpj_exibicao}</Text>
+                  ) : item.cnpj ? (
+                    <Text style={styles.cnpjText}>CNPJ detectado (revise)</Text>
+                  ) : null}
                   {item.ja_cadastrada && item.empresa_nome && (
                     <Text style={styles.linkedText}>Empresa vinculada pela guia existente</Text>
                   )}
@@ -977,89 +436,21 @@ export default function ImportarGuiasScreen() {
                       {item.alertas_duplicidade?.[0] || 'Possível duplicada'}
                     </Text>
                   )}
-                  {!item.empresa_id && item.cnpj_novo && item.cnpj && (() => {
-                    const digits = onlyDigits(item.cnpj);
-                    const loading = creatingCnpjs.has(digits);
-                    return (
-                      <TouchableOpacity
-                        style={[styles.addEmpBtn, loading && { opacity: 0.6 }]}
-                        onPress={() => handleCadastrarUmCnpj(item.cnpj!)}
-                        disabled={loading || creatingAll}
-                      >
-                        {loading ? (
-                          <ActivityIndicator size="small" color="#FFF" />
-                        ) : (
-                          <>
-                            <Ionicons name="add-circle" size={14} color="#FFF" />
-                            <Text style={styles.addEmpBtnText}>Cadastrar empresa pelo CNPJ</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })()}
-                  {!item.empresa_id && item.empresa_hint && !item.cnpj_novo && (() => {
-                    const cnpjLoading = creatingCnpjs.has(onlyDigits(cnpjDrafts[item.temp_id] || ''));
-                    const nameLoading = creatingCnpjs.has(`__nome_${item.temp_id}`);
-                    return (
-                      <View style={{ marginTop: 6 }}>
-                        <View style={styles.cnpjInlineRow}>
-                          <TextInput
-                            style={styles.cnpjInlineInput}
-                            value={cnpjDrafts[item.temp_id] || ''}
-                            onChangeText={(t) =>
-                              setCnpjDrafts((prev) => ({ ...prev, [item.temp_id]: t }))
-                            }
-                            placeholder="CNPJ (opcional)"
-                            keyboardType="number-pad"
-                          />
-                          <TouchableOpacity
-                            style={[styles.addEmpBtn, cnpjLoading && { opacity: 0.6 }]}
-                            onPress={() => handleCadastrarManualRow(item)}
-                            disabled={cnpjLoading || nameLoading}
-                          >
-                            {cnpjLoading ? (
-                              <ActivityIndicator size="small" color="#FFF" />
-                            ) : (
-                              <Text style={styles.addEmpBtnText}>Com CNPJ</Text>
-                            )}
-                          </TouchableOpacity>
-                        </View>
-                        <TouchableOpacity
-                          style={[styles.quickEmpBtn, nameLoading && { opacity: 0.6 }]}
-                          onPress={() => handleCadastrarPorNomeRow(item)}
-                          disabled={nameLoading || cnpjLoading}
-                        >
-                          {nameLoading ? (
-                            <ActivityIndicator size="small" color="#4F46E5" />
-                          ) : (
-                            <>
-                              <Ionicons name="flash" size={13} color="#4F46E5" />
-                              <Text style={styles.quickEmpBtnText} numberOfLines={1}>
-                                Cadastrar só com o nome “{item.empresa_hint?.slice(0, 28)}”
-                              </Text>
-                            </>
-                          )}
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })()}
                   {!item.empresa_id && empresas.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                      {empresasSugeridasParaItem(item, empresas).slice(0, 8).map((e, idx) => (
+                      {empresas.slice(0, 5).map((e) => (
                         <TouchableOpacity
                           key={e.empresa_id}
-                          style={[styles.empChip, idx === 0 && styles.empChipSuggest]}
+                          style={styles.empChip}
                           onPress={() =>
                             updateItem(item.temp_id, {
                               empresa_id: e.empresa_id,
                               empresa_nome: e.nome_fantasia || e.razao_social,
-                              match_confianca: idx === 0 ? 'media' : 'nenhuma',
-                              steps: { ...item.steps, empresa: true },
                             })
                           }
                         >
-                          <Text style={[styles.empChipText, idx === 0 && styles.empChipTextSuggest]} numberOfLines={1}>
-                            {(e.nome_fantasia || e.razao_social).slice(0, 22)}
+                          <Text style={styles.empChipText} numberOfLines={1}>
+                            {(e.nome_fantasia || e.razao_social).slice(0, 18)}
                           </Text>
                         </TouchableOpacity>
                       ))}
@@ -1068,7 +459,7 @@ export default function ImportarGuiasScreen() {
                 </View>
                 <TextInput
                   style={[styles.cellInput, { flex: 0.6 }]}
-                  value={item.tipo || item.tipo_documento || ''}
+                  value={item.tipo || ''}
                   onChangeText={(t) => updateItem(item.temp_id, { tipo: t.toUpperCase() })}
                 />
                 <TextInput
@@ -1255,8 +646,6 @@ const styles = StyleSheet.create({
   },
   infoBannerText: { flex: 1, fontSize: 13, color: '#1E3A8A', lineHeight: 18 },
   cnpjText: { fontSize: 11, color: '#64748B', marginTop: 2 },
-  warnText: { fontSize: 11, color: '#B45309', marginTop: 2, fontWeight: '600' },
-  hintText: { fontSize: 11, color: '#0369A1', marginTop: 2, fontWeight: '600' },
   linkedText: { fontSize: 11, color: '#059669', marginTop: 2, fontWeight: '600' },
   groupCard: {
     backgroundColor: '#F0FDF4',
@@ -1319,88 +708,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginRight: 4,
   },
-  empChipSuggest: {
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#6EE7B7',
-  },
   empChipText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
-  empChipTextSuggest: { color: '#047857' },
-  cnpjBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#ECFDF5',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  cnpjBannerIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#D1FAE5',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cnpjBannerTitle: { fontWeight: '800', color: '#065F46', fontSize: 14 },
-  cnpjBannerSub: { fontSize: 12, color: '#047857', marginTop: 2, lineHeight: 16 },
-  cnpjBannerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#059669',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
-  cnpjBannerBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
-  addEmpBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    backgroundColor: '#059669',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    marginTop: 6,
-  },
-  addEmpBtnText: { color: '#FFF', fontWeight: '700', fontSize: 11 },
-  cnpjInlineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-    flexWrap: 'wrap',
-  },
-  cnpjInlineInput: {
-    flex: 1,
-    minWidth: 120,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: Platform.OS === 'web' ? 8 : 6,
-    fontSize: 12,
-    backgroundColor: '#FFF',
-  },
-  quickEmpBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    backgroundColor: '#EEF2FF',
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: '#C7D2FE',
-  },
-  quickEmpBtnText: { color: '#4F46E5', fontWeight: '700', fontSize: 11, flexShrink: 1 },
   ignoreDup: { width: '100%', marginTop: 4 },
   ignoreDupText: { fontSize: 11, color: '#4F46E5', fontWeight: '600' },
   confirmBtn: {
