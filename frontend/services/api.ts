@@ -1,8 +1,23 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+function isProductionWebHost(hostname: string): boolean {
+  return (
+    hostname.endsWith('.vercel.app') ||
+    hostname === 'guiacontrol-app.vercel.app' ||
+    hostname.includes('guiacontrol')
+  );
+}
+
 /** Base da API sem barra final. Em dev, cai em localhost:8000 se EXPO_PUBLIC_BACKEND_URL vier vazia. */
 export function getBackendBaseUrl(): string {
+  // No app web em produção (Vercel), usa o mesmo domínio e o proxy /api → Render (evita CORS e cold-start agressivo).
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const host = window.location.hostname;
+    if (isProductionWebHost(host)) {
+      return window.location.origin.replace(/\/+$/, '');
+    }
+  }
   const u = process.env.EXPO_PUBLIC_BACKEND_URL?.trim().replace(/\/+$/, '');
   if (u) return u;
   const isDev =
@@ -18,11 +33,12 @@ export function getBackendBaseUrl(): string {
   return '';
 }
 
-const BACKEND_URL = getBackendBaseUrl();
+function resolveApiBaseUrl(): string {
+  return `${getBackendBaseUrl() || 'http://localhost:8000'}/api`;
+}
 
 const api = axios.create({
-  baseURL: `${BACKEND_URL || 'http://localhost:8000'}/api`,
-  // 60s para tolerar cold-start do Render Free na 1a request
+  // baseURL definido no interceptor (web em produção usa proxy /api no mesmo domínio)
   timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
@@ -46,6 +62,7 @@ function isPublicAuthRequest(config: { url?: string; baseURL?: string }): boolea
 // Interceptor: não envia Bearer em cadastro/login (token antigo pode quebrar o fluxo no browser).
 api.interceptors.request.use(
   async (config) => {
+    config.baseURL = resolveApiBaseUrl();
     if (isPublicAuthRequest(config)) {
       delete config.headers.Authorization;
       return config;
@@ -192,16 +209,39 @@ export const whatsappAPI = {
 };
 
 // OCR
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function isGatewayOrNetworkError(error: any): boolean {
   const status = error?.response?.status;
-  const msg = String(error?.message || '');
+  const msg = String(error?.message || error?.code || '');
+  const noResponse = !error?.response && !!error?.request;
   return (
     status === 502 ||
     status === 503 ||
     status === 504 ||
+    noResponse ||
     msg.includes('Network Error') ||
-    msg.includes('timeout')
+    msg.includes('ERR_FAILED') ||
+    msg.includes('ECONNABORTED') ||
+    msg.includes('timeout') ||
+    msg.includes('conexão foi fechada') ||
+    msg.includes('connection was closed')
   );
+}
+
+/** Acorda o Render Free antes do OCR (evita ERR_FAILED na 1ª tentativa). */
+async function warmUpBackend() {
+  const base = getBackendBaseUrl() || 'http://localhost:8000';
+  for (let i = 0; i < 3; i++) {
+    try {
+      await axios.get(`${base}/api/health`, { timeout: 90000 });
+      return;
+    } catch {
+      await sleep(2500 * (i + 1));
+    }
+  }
 }
 
 function normalizeDebugOCRPayload(debugData: any) {
@@ -221,28 +261,39 @@ function normalizeDebugOCRPayload(debugData: any) {
 
 export const ocrAPI = {
   processar: async (imageBase64: string) => {
-    try {
-      return await api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 180000 });
-    } catch (error: any) {
-      // Render + OCR externo podem retornar 502/503/504 em picos/cold-start.
-      // Nesses casos, usamos /ocr/debug como fallback e mantemos o app operacional.
-      if (!isGatewayOrNetworkError(error)) {
-        throw error;
+    await warmUpBackend();
+    const payload = { image_base64: imageBase64 };
+    const ocrOpts = { timeout: 180000 };
+
+    let lastError: any;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await api.post('/ocr/processar', payload, ocrOpts);
+      } catch (error: any) {
+        lastError = error;
+        if (!isGatewayOrNetworkError(error) || attempt >= 2) break;
+        await sleep(2000 * (attempt + 1));
+        await warmUpBackend();
       }
-      const base = getBackendBaseUrl() || 'http://localhost:8000';
-      const debugRes = await axios.post(
-        `${base}/api/ocr/debug`,
-        { image_base64: imageBase64 },
-        { timeout: 180000, headers: { 'Content-Type': 'application/json' } },
-      );
-      if (debugRes?.data?.erro) {
-        throw error;
-      }
-      return {
-        ...debugRes,
-        data: normalizeDebugOCRPayload(debugRes.data),
-      };
     }
+
+    // Fallback: mesmo pipeline de OCR, sem auth e sem decodificação visual pesada (PDF).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const debugRes = await api.post('/ocr/debug', payload, ocrOpts);
+        if (debugRes?.data?.erro) break;
+        return {
+          ...debugRes,
+          data: normalizeDebugOCRPayload(debugRes.data),
+        };
+      } catch (error: any) {
+        lastError = error;
+        if (!isGatewayOrNetworkError(error) || attempt >= 2) break;
+        await sleep(2500 * (attempt + 1));
+        await warmUpBackend();
+      }
+    }
+    throw lastError;
   },
   loteAnalisar: (itens: unknown[]) =>
     api.post('/ocr/lote/analisar', { itens }, { timeout: 90000 }),

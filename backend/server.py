@@ -1606,10 +1606,17 @@ async def processar_ocr(
         dados = extrair_dados_guia(texto_completo)
         
         # === DECODIFICAÇÃO VISUAL DE QR CODE E CÓDIGO DE BARRAS ===
-        # Usar pyzbar para decodificar QR Codes e barcodes diretamente da imagem
-        # Isso captura QR Codes PIX que o OCR de texto não consegue ler
+        # PDF em 300 DPI + múltiplas variações OpenCV estoura RAM no Render Free (502).
+        # Guias em PDF já trazem código de barras no texto do OCR.space — pulamos visual em PDF.
+        run_visual = content_type != "application/pdf" or os.environ.get(
+            "OCR_ENABLE_VISUAL_PDF", ""
+        ).lower() in ("1", "true", "yes")
         try:
-            codigos_visuais = decodificar_codigos_imagem(base64_data, content_type)
+            if not run_visual:
+                logger.info("OCR visual ignorado para PDF (economia de memória no servidor)")
+                codigos_visuais = {"qr_codes": [], "barcodes": []}
+            else:
+                codigos_visuais = decodificar_codigos_imagem(base64_data, content_type)
             
             # Se encontrou QR Code e ainda não temos PIX do texto OCR
             if codigos_visuais["qr_codes"] and not dados.get("qr_code_pix"):
