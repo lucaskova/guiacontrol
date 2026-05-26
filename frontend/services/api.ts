@@ -192,9 +192,53 @@ export const whatsappAPI = {
 };
 
 // OCR
+function isGatewayOrNetworkError(error: any): boolean {
+  const status = error?.response?.status;
+  const msg = String(error?.message || '');
+  return (
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    msg.includes('Network Error') ||
+    msg.includes('timeout')
+  );
+}
+
+function normalizeDebugOCRPayload(debugData: any) {
+  const d = debugData?.dados_extraidos || {};
+  return {
+    texto_completo: debugData?.texto_bruto || '',
+    valor: d?.valor ?? null,
+    data_vencimento: d?.data_vencimento ?? null,
+    codigo_barras: d?.codigo_barras ?? null,
+    qr_code_pix: d?.qr_code_pix ?? null,
+    competencia: d?.competencia ?? null,
+    tipo_documento: d?.tipo_documento ?? null,
+    descricao_sugerida: d?.descricao_sugerida ?? null,
+    cnpj: d?.cnpj ?? null,
+  };
+}
+
 export const ocrAPI = {
-  processar: (imageBase64: string) =>
-    api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 180000 }),
+  processar: async (imageBase64: string) => {
+    try {
+      return await api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 180000 });
+    } catch (error: any) {
+      // Render + OCR externo podem retornar 502/503/504 em picos/cold-start.
+      // Nesses casos, usamos /ocr/debug como fallback e mantemos o app operacional.
+      if (!isGatewayOrNetworkError(error)) {
+        throw error;
+      }
+      const debugRes = await api.post('/ocr/debug', { image_base64: imageBase64 }, { timeout: 180000 });
+      if (debugRes?.data?.erro) {
+        throw error;
+      }
+      return {
+        ...debugRes,
+        data: normalizeDebugOCRPayload(debugRes.data),
+      };
+    }
+  },
   loteAnalisar: (itens: unknown[]) =>
     api.post('/ocr/lote/analisar', { itens }, { timeout: 90000 }),
   loteHash: (imageBase64: string) =>
