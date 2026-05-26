@@ -173,11 +173,52 @@ def _tokens_empresa_significativos(nome_norm: str) -> list[str]:
     return tokens
 
 
+# Abreviações comuns em razões sociais brasileiras que o OCR pode produzir.
+# Mapeia o token COMPLETO da empresa cadastrada -> lista de abreviações que
+# podem aparecer no texto OCR (e vice-versa via _ABREV_REVERSO).
+_ABREVIACOES_EMPRESA: dict[str, tuple[str, ...]] = {
+    "artigos": ("arts", "art"),
+    "artigo": ("art",),
+    "industria": ("ind", "indus", "indu"),
+    "industrial": ("ind", "indus"),
+    "comercio": ("com", "comerc"),
+    "comercial": ("com", "comerc"),
+    "transportes": ("transp", "tranp"),
+    "transporte": ("transp",),
+    "companhia": ("cia", "comp", "compa"),
+    "equipamentos": ("equip", "equipam"),
+    "equipamento": ("equip",),
+    "distribuidora": ("distrib", "dist"),
+    "construtora": ("const", "constr"),
+    "construcao": ("const", "constr"),
+    "alimentos": ("alim",),
+    "servicos": ("serv",),
+    "engenharia": ("eng", "engen"),
+    "tecnologia": ("tec", "tecnol"),
+    "agropecuaria": ("agropec", "agrop"),
+    "consultoria": ("consult",),
+    "participacoes": ("part", "particip"),
+    "imobiliaria": ("imob",),
+}
+
+# Reverso: abreviação -> set de tokens completos que ela pode representar.
+_ABREV_REVERSO: dict[str, set[str]] = {}
+for _completo, _abrevs in _ABREVIACOES_EMPRESA.items():
+    for _abrev in _abrevs:
+        _ABREV_REVERSO.setdefault(_abrev, set()).add(_completo)
+
+
 def _token_empresa_no_texto(token: str, texto_tokens: set[str]) -> bool:
     if token in texto_tokens:
         return True
 
-    # Permite abreviações comuns do OCR/arquivo, ex.: "equip" x "equipamentos".
+    # Token completo da empresa tem abreviações conhecidas no texto?
+    if token in _ABREVIACOES_EMPRESA:
+        for abrev in _ABREVIACOES_EMPRESA[token]:
+            if abrev in texto_tokens:
+                return True
+
+    # Permite abreviações comuns do OCR/arquivo via prefixo, ex.: "equip" x "equipamentos".
     if len(token) < 4:
         return False
     for candidato in texto_tokens:
