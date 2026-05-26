@@ -22,7 +22,8 @@ const BACKEND_URL = getBackendBaseUrl();
 
 const api = axios.create({
   baseURL: `${BACKEND_URL || 'http://localhost:8000'}/api`,
-  timeout: 30000,
+  // 60s para tolerar cold-start do Render Free na 1a request
+  timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -193,11 +194,11 @@ export const whatsappAPI = {
 // OCR
 export const ocrAPI = {
   processar: (imageBase64: string) =>
-    api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 120000 }),
+    api.post('/ocr/processar', { image_base64: imageBase64 }, { timeout: 180000 }),
   loteAnalisar: (itens: unknown[]) =>
-    api.post('/ocr/lote/analisar', { itens }, { timeout: 60000 }),
+    api.post('/ocr/lote/analisar', { itens }, { timeout: 90000 }),
   loteHash: (imageBase64: string) =>
-    api.post('/ocr/lote/hash', { image_base64: imageBase64 }),
+    api.post('/ocr/lote/hash', { image_base64: imageBase64 }, { timeout: 60000 }),
 };
 
 export const guiasLoteAPI = {

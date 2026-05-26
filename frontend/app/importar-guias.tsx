@@ -73,6 +73,47 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Gera um hash determinístico do arquivo no próprio navegador.
+ * Não precisa coincidir com o hash do backend — serve apenas para
+ * o backend detectar arquivos repetidos *dentro do mesmo lote*.
+ * Isso evita uma chamada extra a /api/ocr/lote/hash que falhava
+ * no cold-start do Render free.
+ */
+async function computeLocalHash(dataUrl: string): Promise<string> {
+  const payload = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
+  try {
+    if (typeof globalThis !== 'undefined' && (globalThis as any).crypto?.subtle) {
+      const enc = new TextEncoder().encode(payload);
+      const buf = await (globalThis as any).crypto.subtle.digest('SHA-256', enc);
+      const arr = Array.from(new Uint8Array(buf));
+      return arr.map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+    }
+  } catch {
+    // segue para o fallback djb2
+  }
+  let h = 5381;
+  for (let i = 0; i < payload.length; i++) {
+    h = ((h * 33) ^ payload.charCodeAt(i)) >>> 0;
+  }
+  return `loc${h.toString(16).padStart(8, '0')}${payload.length.toString(16)}`.slice(0, 32);
+}
+
+/** Tenta o OCR com 1 retry — cobre cold-start do Render. */
+async function ocrComRetry(base64: string) {
+  try {
+    return await ocrAPI.processar(base64);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const status = err?.response?.status;
+    const isTimeoutOuRede =
+      msg.includes('timeout') || msg.includes('Network') || status === 502 || status === 503 || status === 504;
+    if (!isTimeoutOuRede) throw err;
+    await sleep(1500);
+    return await ocrAPI.processar(base64);
+  }
+}
+
 export default function ImportarGuiasScreen() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -131,9 +172,9 @@ export default function ImportarGuiasScreen() {
       setItems((prev) => prev.map((p) => (p.temp_id === it.temp_id ? it : p)));
 
       try {
-        const [hashRes, ocrRes] = await Promise.all([
-          ocrAPI.loteHash(it.base64),
-          ocrAPI.processar(it.base64),
+        const [fileHash, ocrRes] = await Promise.all([
+          computeLocalHash(it.base64),
+          ocrComRetry(it.base64),
         ]);
         const d = ocrRes.data;
         await sleep(200);
@@ -147,7 +188,7 @@ export default function ImportarGuiasScreen() {
           barcode: Boolean(d.codigo_barras),
         };
 
-        let cur = { ...it, file_hash: hashRes.data.file_hash };
+        let cur = { ...it, file_hash: fileHash };
         for (const s of STEP_LABELS) {
           cur = { ...cur, currentLabel: s.label };
           setItems((prev) => prev.map((p) => (p.temp_id === cur.temp_id ? { ...cur, steps: { ...steps } } : p)));
@@ -230,7 +271,37 @@ export default function ImportarGuiasScreen() {
       setResumo(analise.data.resumo);
       setPhase('review');
     } catch {
-      showToast('Erro na análise do lote', 'error');
+      // Fallback: análise do lote falhou (ex.: cold-start ou timeout do Render).
+      // Garante que os dados já lidos pelo OCR não se percam — o usuário
+      // pode revisar e vincular a empresa manualmente.
+      const fallback = ocrResults.map((r) => ({
+        ...r,
+        tipo: r.tipo_documento || r.tipo,
+        descricao: r.descricao_sugerida || r.tipo_documento || 'Guia',
+        pronto: false,
+        ja_cadastrada: false,
+        arquivo_repetido_lote: false,
+        tem_duplicidade: false,
+        alertas_duplicidade: [],
+        cnpj_exibicao:
+          r.cnpj && r.cnpj.length === 14
+            ? `${r.cnpj.slice(0, 2)}.${r.cnpj.slice(2, 5)}.${r.cnpj.slice(5, 8)}/${r.cnpj.slice(8, 12)}-${r.cnpj.slice(12)}`
+            : undefined,
+        selected: false,
+      }));
+      setItems(fallback);
+      setGrupos([]);
+      setResumo({
+        total: fallback.length,
+        prontos: 0,
+        duplicatas: 0,
+        sem_empresa: fallback.length,
+        ja_cadastradas: 0,
+      });
+      showToast(
+        'Os dados foram lidos, mas a análise automática falhou. Revise e vincule a empresa manualmente.',
+        'error',
+      );
       setPhase('review');
     } finally {
       setProcessing(false);
