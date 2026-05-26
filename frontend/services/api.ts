@@ -229,7 +229,12 @@ export const ocrAPI = {
       if (!isGatewayOrNetworkError(error)) {
         throw error;
       }
-      const debugRes = await api.post('/ocr/debug', { image_base64: imageBase64 }, { timeout: 180000 });
+      const base = getBackendBaseUrl() || 'http://localhost:8000';
+      const debugRes = await axios.post(
+        `${base}/api/ocr/debug`,
+        { image_base64: imageBase64 },
+        { timeout: 180000, headers: { 'Content-Type': 'application/json' } },
+      );
       if (debugRes?.data?.erro) {
         throw error;
       }
