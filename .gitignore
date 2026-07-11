@@ -66,3 +66,4 @@ desktop.ini
 *.tmp
 coverage/
 .nyc_output/
+.data/

@@ -15,3 +15,6 @@ tzdata>=2024.1
 opencv-python-headless>=4.10,<5
 zxing-cpp>=2.2,<4
 numpy>=2.0,<3
+redis>=5.0,<6
+pytest>=8.0,<9
+pytest-asyncio>=0.23,<1

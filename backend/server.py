@@ -20,6 +20,10 @@ import requests
 import io
 from PIL import Image
 
+from communication.domain import CommunicationEventType
+from communication.router import build_communication_router
+from communication.service import get_center, init_center
+
 # Imports opcionais para decodificação de QR Code/Barcode.
 # Usamos Exception aqui porque pyzbar/cv2 podem falhar com FileNotFoundError
 # (DLL ausente no Windows) e isso não pode derrubar o servidor.
@@ -516,16 +520,23 @@ async def _status_whatsapp_contador(user_id: str) -> dict:
         "session": ctx["session"],
         "conectado": ctx["conectado"],
         "updated_at": ctx.get("updated_at"),
+        "pronto_para_disparar": False,
     }
     if not headers_ok:
         base["detalhes"] = "Defina APIBRASIL_BEARER_TOKEN e APIBRASIL_DEVICE_TOKEN no backend/.env."
         return base
-    if ctx["conectado"]:
-        plat = _status_whatsapp_apibrasil()
-        base["plataforma"] = plat
-        return base
-    live, det = _apibrasil_sessao_conectada(ctx["session"])
-    if live:
+
+    from communication.providers.factory import get_communication_provider
+
+    provider = get_communication_provider()
+    live = False
+    det: dict = {}
+    if hasattr(provider, "check_session_connected"):
+        live, det = await provider.check_session_connected(ctx["session"])
+    else:
+        live, det = _apibrasil_sessao_conectada(ctx["session"])
+
+    if live and not ctx["conectado"]:
         await db.users.update_one(
             {"user_id": user_id},
             {
@@ -537,7 +548,24 @@ async def _status_whatsapp_contador(user_id: str) -> dict:
             },
         )
         base["conectado"] = True
+    elif not live and ctx["conectado"]:
+        # Flag local stale — sincroniza para offline
+        await db.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "whatsapp_conectado": False,
+                    "whatsapp_updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        base["conectado"] = False
+
     base["detalhes"] = det
+    base["pronto_para_disparar"] = bool(base["conectado"] and headers_ok)
+    if base["conectado"]:
+        plat = _status_whatsapp_apibrasil()
+        base["plataforma"] = plat
     return base
 
 
@@ -630,9 +658,26 @@ async def enviar_whatsapp(
     url = f"{gateway}/api/v2/whatsapp/sendText"
     payload: dict = {"number": phone, "text": mensagem, "time_typing": 1}
 
-    incluir_session = os.getenv("APIBRASIL_SEND_SESSION", "").strip().lower() in ("1", "true", "yes")
-    if session and incluir_session:
+    # Default: sempre usa a sessão do escritório (QR). Desliga só com APIBRASIL_SEND_SESSION=false.
+    send_session = os.getenv("APIBRASIL_SEND_SESSION", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    require_session = os.getenv("APIBRASIL_REQUIRE_SESSION", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    if session and send_session:
         payload["session"] = session
+    elif require_session and not session:
+        return {
+            "sucesso": False,
+            "erro": "WhatsApp do escritorio nao conectado. Abra Notificacoes e escaneie o QR Code.",
+        }
 
     logger.info(f"Enviando WhatsApp (APIBrasil) para {phone}: {mensagem[:50]}...")
 
@@ -825,18 +870,16 @@ def _formatar_valor_br(valor: float) -> str:
 
 async def verificar_e_notificar_guias(user_id: Optional[str] = None):
     """
-    Disparo por vencimento (WhatsApp / e-mail simulado):
-    - D-7, D-3, D-0: um envio por guia por marco (reminder_kind).
-    - Apos vencimento: ate a guia ser paga, no maximo 1 lembrete por dia (pos_vencimento).
+    Agenda lembretes via CommunicationCenter (eventos → fila → worker).
+    - D-7, D-3, D-0: um evento por guia por marco (dedupe).
+    - Apos vencimento: no maximo 1 evento por dia (pos_vencimento).
     Atualiza status para vencida quando a data passou.
+    Nao envia WhatsApp diretamente — apenas emite eventos.
     """
     agora = datetime.now(timezone.utc)
     tz_br = ZoneInfo("America/Sao_Paulo")
     agora_br = datetime.now(tz_br)
     hoje_date = agora_br.date()
-    start_br = agora_br.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_day = start_br.astimezone(timezone.utc)
-    end_day = (start_br + timedelta(days=1)).astimezone(timezone.utc)
 
     resultados = {
         "lembre_d7": 0,
@@ -844,9 +887,17 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
         "lembre_d0": 0,
         "pos_vencimento": 0,
         "status_atualizados_vencida": 0,
-        "notificacoes_enviadas": 0,
+        "eventos_enfileirados": 0,
+        "notificacoes_enviadas": 0,  # compat UI — agora significa "agendadas"
         "erros": 0,
         "ignoradas_sem_contato": 0,
+    }
+
+    event_map = {
+        "lembre_d7": CommunicationEventType.GUIDE_DUE_IN_7_DAYS,
+        "lembre_d3": CommunicationEventType.GUIDE_DUE_IN_3_DAYS,
+        "lembre_d0": CommunicationEventType.GUIDE_DUE_TODAY,
+        "pos_vencimento": CommunicationEventType.GUIDE_OVERDUE,
     }
 
     query_base: dict = {"status": {"$ne": "paga"}}
@@ -854,6 +905,7 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
         query_base["user_id"] = user_id
 
     guias = await db.guias.find(query_base).to_list(length=5000)
+    center = get_center()
 
     for guia in guias:
         data_venc_raw = guia.get("data_vencimento", "")
@@ -889,53 +941,6 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
         else:
             continue
 
-        if reminder_kind in ("lembre_d7", "lembre_d3", "lembre_d0"):
-            if await _ja_enviou_lembrete(guia["guia_id"], reminder_kind):
-                continue
-        else:
-            if await _ja_enviou_pos_vencimento_hoje(guia["guia_id"], start_day, end_day):
-                continue
-
-        valor_fmt = _formatar_valor_br(float(guia.get("valor") or 0))
-        tipo = guia.get("tipo", "Guia")
-        empresa_nome = empresa.get("nome_fantasia") or empresa.get("razao_social", "")
-        venc_fmt = _formatar_data_br(data_venc_raw) or str(data_venc_raw)
-        link = await _link_portal_cliente(empresa_id)
-        # Cliente: pagar e informar no portal; contador só cadastra guias no sistema.
-        cta_link = ""
-        if link:
-            cta_link = (
-                f"\n\n*Seu link (abrir no celular):* {link}\n"
-                "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* ou *anexar comprovante* "
-                "sem depender do escritório para isso."
-            )
-
-        if reminder_kind == "lembre_d7":
-            titulo = "GuiaControl — faltam 7 dias"
-            corpo = (
-                f"Faltam *7 dias* para o vencimento da guia *{tipo}* ({empresa_nome}) no valor de *{valor_fmt}* "
-                f"(vencimento {venc_fmt}).{cta_link}"
-            )
-        elif reminder_kind == "lembre_d3":
-            titulo = "GuiaControl — faltam 3 dias"
-            corpo = (
-                f"Faltam *3 dias* para vencer a guia *{tipo}* ({empresa_nome}) — *{valor_fmt}* "
-                f"(vencimento {venc_fmt}).{cta_link}"
-            )
-        elif reminder_kind == "lembre_d0":
-            titulo = "GuiaControl — vence hoje"
-            corpo = (
-                f"A guia *{tipo}* ({empresa_nome}) no valor de *{valor_fmt}* *vence hoje* ({venc_fmt}).{cta_link}"
-            )
-        else:
-            titulo = "GuiaControl — guia em atraso"
-            corpo = (
-                f"A guia *{tipo}* ({empresa_nome}) de *{valor_fmt}* esta *em atraso* "
-                f"(vencimento {venc_fmt}). Regularize o pagamento.{cta_link}"
-            )
-
-        mensagem = f"*{titulo}*\n\n{corpo}"
-
         whatsapp_ativo = empresa.get("notificacoes_whatsapp", True)
         whatsapp = empresa.get("whatsapp") or empresa.get("telefone")
         email_ativo = empresa.get("notificacoes_email", True)
@@ -945,31 +950,50 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
             resultados["ignoradas_sem_contato"] += 1
             continue
 
-        ok_whats = False
-        ok_email = False
+        valor_fmt = _formatar_valor_br(float(guia.get("valor") or 0))
+        tipo = guia.get("tipo", "Guia")
+        empresa_nome = empresa.get("nome_fantasia") or empresa.get("razao_social", "")
+        venc_fmt = _formatar_data_br(data_venc_raw) or str(data_venc_raw)
+        link = await _link_portal_cliente(empresa_id)
+        link_block = ""
+        if link:
+            link_block = (
+                f"\n\n*Seu link (abrir no celular):* {link}\n"
+                "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* ou *anexar comprovante* "
+                "sem depender do escritório para isso."
+            )
 
         if whatsapp and whatsapp_ativo:
-            wctx = await _whatsapp_ctx_usuario(g_user_id)
-            wa_session = wctx["session"] if wctx.get("conectado") else None
-            resultado = await enviar_whatsapp(whatsapp, mensagem, session=wa_session)
-            await registrar_notificacao(
-                g_user_id,
-                empresa_id,
-                guia["guia_id"],
-                "whatsapp",
-                whatsapp,
-                mensagem,
-                resultado,
-                reminder_kind=reminder_kind,
-            )
-            if resultado.get("sucesso"):
-                resultados["notificacoes_enviadas"] += 1
-                ok_whats = True
-            else:
+            try:
+                evt = await center.emit_guide_reminder(
+                    accountant_id=g_user_id,
+                    empresa_id=empresa_id,
+                    guia_id=guia["guia_id"],
+                    event_type=event_map[reminder_kind],
+                    reminder_kind=reminder_kind,
+                    payload={
+                        "phone": whatsapp,
+                        "tipo": tipo,
+                        "competencia": tipo,
+                        "valor_fmt": valor_fmt,
+                        "vencimento_fmt": venc_fmt,
+                        "nome": empresa_nome,
+                        "link": link,
+                        "link_block": link_block,
+                    },
+                )
+                if not evt.get("deduplicated"):
+                    resultados[reminder_kind] += 1
+                    resultados["eventos_enfileirados"] += 1
+                    resultados["notificacoes_enviadas"] += 1
+            except Exception as e:
+                logger.error("Falha ao enfileirar lembrete %s: %s", guia.get("guia_id"), e)
                 resultados["erros"] += 1
 
         if email and email_ativo:
+            titulo = f"GuiaControl — {reminder_kind}"
             assunto = f"{titulo} — {tipo} {valor_fmt}"
+            mensagem = f"{tipo} {empresa_nome} {valor_fmt} {venc_fmt}{link_block}"
             resultado_email = await enviar_email_simulado(email, assunto, mensagem)
             await registrar_notificacao(
                 g_user_id,
@@ -981,15 +1005,10 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
                 resultado_email,
                 reminder_kind=reminder_kind,
             )
-            if resultado_email.get("sucesso"):
-                resultados["notificacoes_enviadas"] += 1
-                ok_email = True
 
-        if ok_whats or ok_email:
-            resultados[reminder_kind] += 1
-
-    logger.info(f"Job de notificações: {resultados}")
+    logger.info(f"Job de notificações (CommunicationCenter): {resultados}")
     return resultados
+
 
 def calcular_status_guia(data_vencimento: str, status_atual: str) -> str:
     """Calcula o status da guia baseado na data de vencimento"""
@@ -2238,32 +2257,31 @@ async def criar_guias_lote(
                     link = await _link_portal_cliente(item.empresa_id)
                     valor_fmt = _formatar_valor_br(float(item.valor))
                     venc_fmt = _formatar_data_br(item.data_vencimento) or str(item.data_vencimento)
-                    msg = (
-                        f"*GuiaControl — nova guia cadastrada*\n\n"
-                        f"*{item.tipo}* — {valor_fmt}\n"
-                        f"Vencimento: {venc_fmt}\n"
-                    )
-                    if item.competencia:
-                        msg += f"Competência: {item.competencia}\n"
+                    link_block = ""
                     if link:
-                        msg += (
-                            f"\n*Seu link (abrir no celular):* {link}\n"
+                        link_block = (
+                            f"\n\n*Seu link (abrir no celular):* {link}\n"
                             "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
                             "ou *anexar comprovante* sem depender do escritório."
                         )
-                    res = await enviar_whatsapp(whatsapp, msg, session=wa_session)
-                    await registrar_notificacao(
-                        user["user_id"],
-                        item.empresa_id,
-                        guia["guia_id"],
-                        "whatsapp",
-                        whatsapp,
-                        msg,
-                        res,
+                    center = get_center()
+                    await center.emit_guide_reminder(
+                        accountant_id=user["user_id"],
+                        empresa_id=item.empresa_id,
+                        guia_id=guia["guia_id"],
+                        event_type=CommunicationEventType.GUIDE_CREATED,
                         reminder_kind="nova_guia_lote",
+                        payload={
+                            "phone": whatsapp,
+                            "tipo": item.tipo,
+                            "competencia": item.competencia or item.tipo,
+                            "valor_fmt": valor_fmt,
+                            "vencimento_fmt": venc_fmt,
+                            "link": link,
+                            "link_block": link_block,
+                        },
                     )
-                    if res.get("sucesso"):
-                        notificacoes_enviadas += 1
+                    notificacoes_enviadas += 1
         except HTTPException as ex:
             erros.append({"temp_id": item.temp_id, "erro": ex.detail})
         except Exception as ex:
@@ -2381,7 +2399,7 @@ async def enviar_lembrete_manual(
     session_token: Optional[str] = Cookie(None),
     authorization: Optional[str] = Header(None),
 ):
-    """Envia um lembrete manual via WhatsApp para o cliente da guia.
+    """Agenda lembrete manual via CommunicationCenter (fila + worker).
 
     Body opcional:
     {
@@ -2411,8 +2429,7 @@ async def enviar_lembrete_manual(
         )
 
     wctx = await _whatsapp_ctx_usuario(user["user_id"])
-    wa_session = wctx["session"] if wctx.get("conectado") else None
-    if not wa_session:
+    if not wctx.get("conectado"):
         live, _ = _apibrasil_sessao_conectada(wctx["session"])
         if live:
             await db.users.update_one(
@@ -2425,7 +2442,6 @@ async def enviar_lembrete_manual(
                     }
                 },
             )
-            wa_session = wctx["session"]
         else:
             raise HTTPException(
                 status_code=400,
@@ -2459,40 +2475,28 @@ async def enviar_lembrete_manual(
         )
 
     link = await _link_portal_cliente(guia.get("empresa_id", ""))
-    cta_link = ""
-    if link:
-        cta_link = (
-            f"\n\n*Seu link (abrir no celular):* {link}\n"
-            "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
-            "ou *anexar comprovante* sem depender do escritório."
-        )
-
     extra = (body.get("mensagem_extra") or "").strip()
-    extra_block = f"\n\n_Recado do escritório:_ {extra}" if extra else ""
+    mensagem = f"*{titulo}*\n\n{situacao}"
 
-    mensagem = f"*{titulo}*\n\n{situacao}{cta_link}{extra_block}"
-
-    resultado = await enviar_whatsapp(telefone, mensagem, session=wa_session)
-    await registrar_notificacao(
-        user["user_id"],
-        guia.get("empresa_id", ""),
-        guia_id,
-        "whatsapp",
-        telefone,
-        mensagem,
-        resultado,
-        reminder_kind="manual",
+    center = get_center()
+    evt = await center.emit_manual_reminder(
+        accountant_id=user["user_id"],
+        empresa_id=guia.get("empresa_id", ""),
+        guia_id=guia_id,
+        phone=telefone,
+        mensagem=mensagem,
+        extra=extra,
+        link=link,
     )
 
-    ok = bool(resultado.get("sucesso"))
     return {
-        "sucesso": ok,
-        "mensagem": (
-            "Lembrete enviado com sucesso." if ok else (resultado.get("erro") or "Falha ao enviar lembrete.")
-        ),
+        "sucesso": True,
+        "mensagem": "Lembrete agendado na Central de Comunicação (fila com delay inteligente).",
         "telefone": telefone,
         "preview": mensagem,
         "link": link,
+        "event_id": evt.get("id"),
+        "status": evt.get("status"),
     }
 
 @api_router.put("/guias/{guia_id}")
@@ -2714,20 +2718,15 @@ async def enviar_notificacao_teste(
                 detail="Conecte seu WhatsApp em Notificacoes > Configuracoes (QR Code) antes de enviar.",
             )
 
-    resultado = await enviar_whatsapp(telefone, mensagem, session=wa_session)
-    
-    await registrar_notificacao(
-        user["user_id"], "", "", "whatsapp", telefone, mensagem, resultado
+    resultado = await get_center().emit_test(
+        accountant_id=user["user_id"],
+        phone=telefone,
+        mensagem=mensagem,
     )
     
-    ok = resultado.get("sucesso", False)
     return {
-        "sucesso": ok,
-        "mensagem": (
-            "Notificacao de teste enviada"
-            if ok
-            else (resultado.get("erro") or "Falha ao enviar")
-        ),
+        "sucesso": True,
+        "mensagem": "Mensagem de teste agendada na Central de Comunicação",
         "detalhes": resultado,
     }
 
@@ -2777,6 +2776,7 @@ async def whatsapp_conectar(
     """
     Inicia sessao WhatsApp do contador e retorna QR Code (APIBrasil /whatsapp/start).
     O contador escaneia com o app WhatsApp no celular (Aparelhos conectados).
+    Os disparos usam esta sessao (numero do escritorio).
     """
     user = await get_current_user(session_token, authorization)
     user_id = user["user_id"]
@@ -2792,11 +2792,34 @@ async def whatsapp_conectar(
         },
         upsert=False,
     )
-    resultado = _apibrasil_start_session(wa_session)
+
+    from communication.providers.factory import get_communication_provider
+
+    provider = get_communication_provider()
+    if hasattr(provider, "configured") and not provider.configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "APIBrasil nao configurada. Defina APIBRASIL_BEARER_TOKEN e "
+                "APIBRASIL_DEVICE_TOKEN no backend/.env e reinicie a API."
+            ),
+        )
+
+    if hasattr(provider, "start_session"):
+        resultado = await provider.start_session(wa_session)
+    else:
+        resultado = _apibrasil_start_session(wa_session)
+
     if resultado.get("conectado"):
         await db.users.update_one(
             {"user_id": user_id},
-            {"$set": {"whatsapp_conectado": True}},
+            {
+                "$set": {
+                    "whatsapp_conectado": True,
+                    "whatsapp_session": wa_session,
+                    "whatsapp_updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
         )
     if not resultado.get("sucesso") and not resultado.get("qrcode_data_uri"):
         raise HTTPException(
@@ -2807,10 +2830,12 @@ async def whatsapp_conectar(
         "session": wa_session,
         "conectado": bool(resultado.get("conectado")),
         "qrcode_data_uri": resultado.get("qrcode_data_uri"),
+        "send_session_enabled": os.getenv("APIBRASIL_SEND_SESSION", "true").strip().lower()
+        not in ("0", "false", "no", "off"),
         "mensagem": (
-            "WhatsApp ja conectado."
+            "WhatsApp ja conectado. Os disparos usarao este numero do escritorio."
             if resultado.get("conectado")
-            else "Escaneie o QR Code no WhatsApp do seu celular."
+            else "Escaneie o QR Code no WhatsApp do celular do escritorio (Aparelhos conectados)."
         ),
         "detalhes": resultado,
     }
@@ -2821,9 +2846,22 @@ async def whatsapp_status(
     session_token: Optional[str] = Cookie(None),
     authorization: Optional[str] = Header(None),
 ):
-    """Status da conexao WhatsApp do contador logado."""
+    """Status da conexao WhatsApp do contador logado (com sync ao vivo)."""
     user = await get_current_user(session_token, authorization)
-    return await _status_whatsapp_contador(user["user_id"])
+    status = await _status_whatsapp_contador(user["user_id"])
+    status["send_session_enabled"] = os.getenv("APIBRASIL_SEND_SESSION", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    status["require_session"] = os.getenv("APIBRASIL_REQUIRE_SESSION", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    return status
 
 
 @api_router.post("/whatsapp/desconectar")
@@ -2831,10 +2869,21 @@ async def whatsapp_desconectar(
     session_token: Optional[str] = Cookie(None),
     authorization: Optional[str] = Header(None),
 ):
-    """Remove vinculo local da sessao WhatsApp do contador (nao desloga o aparelho na APIBrasil)."""
+    """Desconecta o WhatsApp do escritorio (tenta logout na APIBrasil + limpa flag local)."""
     user = await get_current_user(session_token, authorization)
+    user_id = user["user_id"]
+    ctx = await _whatsapp_ctx_usuario(user_id)
+    session = ctx.get("session") or _whatsapp_session_for_user(user_id)
+
+    logout_result: dict = {"sucesso": False}
+    from communication.providers.factory import get_communication_provider
+
+    provider = get_communication_provider()
+    if hasattr(provider, "logout_session"):
+        logout_result = await provider.logout_session(session)
+
     await db.users.update_one(
-        {"user_id": user["user_id"]},
+        {"user_id": user_id},
         {
             "$set": {
                 "whatsapp_conectado": False,
@@ -2842,7 +2891,16 @@ async def whatsapp_desconectar(
             }
         },
     )
-    return {"ok": True, "mensagem": "Sessao desvinculada. Gere um novo QR para reconectar."}
+    return {
+        "ok": True,
+        "mensagem": (
+            "WhatsApp desconectado na APIBrasil e no app. Gere um novo QR para reconectar."
+            if logout_result.get("sucesso")
+            else "Sessao desvinculada no app. Se o aparelho continuar conectado na APIBrasil, "
+            "remova em Aparelhos conectados no WhatsApp e gere um novo QR."
+        ),
+        "logout_remoto": logout_result,
+    }
 
 
 @api_router.get("/notificacoes/status-whatsapp")
@@ -2852,7 +2910,14 @@ async def verificar_status_whatsapp(
 ):
     """Status WhatsApp do contador + plataforma APIBrasil."""
     user = await get_current_user(session_token, authorization)
-    return await _status_whatsapp_contador(user["user_id"])
+    status = await _status_whatsapp_contador(user["user_id"])
+    status["send_session_enabled"] = os.getenv("APIBRASIL_SEND_SESSION", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    return status
 
 
 @api_router.get("/notificacoes/status-zapi")
@@ -3825,6 +3890,7 @@ async def health_check():
 # Include the router in the main app
 app.include_router(api_router)
 app.include_router(admin_router)
+app.include_router(build_communication_router(get_current_user, is_admin_email=_is_admin_email))
 
 app.add_middleware(
     CORSMiddleware,
@@ -3845,8 +3911,19 @@ async def startup_indexes():
         )
     except Exception as e:
         logger.warning("create_index portal_token: %s", e)
+    try:
+        center = init_center(db)
+        await center.startup()
+        logger.info("CommunicationCenter iniciado")
+    except Exception as e:
+        logger.exception("Falha ao iniciar CommunicationCenter: %s", e)
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        center = get_center()
+        await center.shutdown()
+    except Exception:
+        pass
     client.close()

@@ -197,15 +197,18 @@ export default function NotificacoesScreen() {
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>WHATSAPP (APIBRASIL)</Text>
               <View style={styles.statusRow}>
-                <View style={[styles.statusDot, { backgroundColor: whatsappStatus?.conectado ? '#059669' : '#DC2626' }]} />
+                <View style={[styles.statusDot, { backgroundColor: whatsappStatus?.pronto_para_disparar || whatsappStatus?.conectado ? '#059669' : '#DC2626' }]} />
                 <Text style={styles.statusText}>
                   {whatsappStatus?.configurado === false
                     ? 'Servidor sem credenciais APIBrasil (.env)'
-                    : whatsappStatus?.conectado
-                      ? 'Seu WhatsApp conectado'
-                      : 'Nao conectado — escaneie o QR abaixo'}
+                    : whatsappStatus?.pronto_para_disparar || whatsappStatus?.conectado
+                      ? 'Escritorio conectado — disparos usam este numero'
+                      : 'Nao conectado — escaneie o QR com o celular do escritorio'}
                 </Text>
               </View>
+              {whatsappStatus?.session ? (
+                <Text style={styles.hintText}>Sessao: {whatsappStatus.session}</Text>
+              ) : null}
               {whatsappStatus?.configurado !== false && !whatsappStatus?.conectado && (
                 <TouchableOpacity
                   style={[styles.connectBtn, conectandoWhatsapp && { opacity: 0.6 }]}
@@ -217,14 +220,14 @@ export default function NotificacoesScreen() {
                   ) : (
                     <>
                       <Ionicons name="qr-code-outline" size={18} color="#FFF" />
-                      <Text style={styles.connectBtnText}>Conectar meu WhatsApp</Text>
+                      <Text style={styles.connectBtnText}>Conectar WhatsApp do escritorio</Text>
                     </>
                   )}
                 </TouchableOpacity>
               )}
               {whatsappStatus?.conectado && (
                 <TouchableOpacity style={styles.disconnectBtn} onPress={handleDesconectarWhatsapp}>
-                  <Text style={styles.disconnectBtnText}>Desvincular WhatsApp</Text>
+                  <Text style={styles.disconnectBtnText}>Desconectar WhatsApp</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity style={styles.testBtn} onPress={() => setShowTestModal(true)}>
@@ -386,7 +389,8 @@ export default function NotificacoesScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Conectar WhatsApp</Text>
             <Text style={styles.modalDesc}>
-              No celular: WhatsApp → Menu (⋮) → Aparelhos conectados → Conectar aparelho → escaneie o QR.
+              No celular do escritorio: WhatsApp → Menu (⋮) → Aparelhos conectados → Conectar aparelho → escaneie o QR.
+              Os disparos sairao deste numero.
             </Text>
             {qrUri ? (
               <Image source={{ uri: qrUri }} style={styles.qrImage} resizeMode="contain" />

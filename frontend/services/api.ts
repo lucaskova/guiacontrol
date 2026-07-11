@@ -338,3 +338,16 @@ export const adminAPI = {
     banner_active?: boolean;
   }) => api.patch('/admin/config', body),
 };
+
+// =============== COMMUNICATION CENTER ===============
+export const communicationAPI = {
+  health: () => api.get('/communication/health'),
+  dashboard: () => api.get('/communication/dashboard'),
+  dashboardAdmin: () => api.get('/communication/dashboard/admin'),
+  settings: () => api.get('/communication/settings'),
+  patchSettings: (body: Record<string, unknown>) => api.patch('/communication/settings', body),
+  templates: () => api.get('/communication/templates'),
+  events: (limit = 50) => api.get('/communication/events', { params: { limit } }),
+  logs: (limit = 50) => api.get('/communication/logs', { params: { limit } }),
+  queue: () => api.get('/communication/queue'),
+};

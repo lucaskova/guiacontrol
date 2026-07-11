@@ -21,6 +21,12 @@ services:
         sync: false
       - key: WHATSAPP_PROVIDER
         value: apibrasil
+      - key: APIBRASIL_SEND_SESSION
+        value: "true"
+      - key: APIBRASIL_REQUIRE_SESSION
+        value: "true"
+      - key: REDIS_URL
+        sync: false
       - key: PUBLIC_CLIENT_BASE_URL
         sync: false
       - key: ADMIN_EMAILS

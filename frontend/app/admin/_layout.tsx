@@ -10,6 +10,7 @@ const TABS = [
   { key: 'users', label: 'Contadores', icon: 'people-outline' as const, href: '/admin/users' },
   { key: 'empresas', label: 'Empresas', icon: 'business-outline' as const, href: '/admin/empresas' },
   { key: 'guias', label: 'Guias', icon: 'document-text-outline' as const, href: '/admin/guias' },
+  { key: 'communication', label: 'Comunicação', icon: 'pulse-outline' as const, href: '/admin/communication' },
   { key: 'logs', label: 'Logs WhatsApp', icon: 'chatbubble-ellipses-outline' as const, href: '/admin/logs' },
   { key: 'config', label: 'Configuração', icon: 'settings-outline' as const, href: '/admin/config' },
 ];
