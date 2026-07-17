@@ -304,6 +304,16 @@ class ApiBrasilProvider(CommunicationProvider):
             ok = self._success(response.status_code, data)
             qr = self._extract_qr(data)
             conectado = self._payload_looks_connected(data)
+            # APIBrasil às vezes responde "erro" quando o device já está inChat
+            if not conectado:
+                err_probe = self._error_message(data).lower()
+                if any(
+                    s in err_probe
+                    for s in ("inchat", "já está conectado", "ja esta conectado", "already connected", "already connected")
+                ):
+                    conectado = True
+            if conectado:
+                ok = True
             return {
                 "sucesso": ok,
                 "status_code": response.status_code,
@@ -311,7 +321,7 @@ class ApiBrasilProvider(CommunicationProvider):
                 "qrcode_data_uri": self._as_data_uri(qr) if qr else None,
                 "conectado": conectado,
                 "resposta": data,
-                "erro": None if ok or qr else self._error_message(data),
+                "erro": None if ok or qr or conectado else self._error_message(data),
             }
         except Exception as exc:
             logger.exception("APIBrasil start session failed")
@@ -412,12 +422,34 @@ class ApiBrasilProvider(CommunicationProvider):
     def _payload_looks_connected(data: Any) -> bool:
         if not isinstance(data, dict):
             return False
+        blob = json.dumps(data, default=str).lower()
+        if "inchat" in blob or "in_chat" in blob:
+            return True
+        if "já está conectado" in blob or "ja esta conectado" in blob or "already connected" in blob:
+            return True
         st = str(data.get("status") or data.get("state") or "").lower()
         msg = str(data.get("message") or "").lower()
-        if st in ("connected", "open", "online", "authenticated", "success"):
+        if st in ("connected", "open", "online", "authenticated", "success", "inchat"):
             return True
-        if "connected" in msg or "conectad" in msg:
+        if "connected" in msg or "conectad" in msg or "inchat" in msg:
             return True
+        inner = data.get("response")
+        if isinstance(inner, dict):
+            st2 = str(inner.get("status") or inner.get("state") or "").lower()
+            msg2 = str(inner.get("message") or "").lower()
+            if st2 in ("connected", "open", "online", "authenticated", "success", "inchat"):
+                return True
+            if "connected" in msg2 or "conectad" in msg2 or "inchat" in msg2:
+                return True
+        device = data.get("device")
+        if isinstance(device, dict):
+            st3 = str(device.get("status") or device.get("state") or "").lower()
+            if st3 in ("connected", "open", "online", "authenticated", "inchat") or "inchat" in st3:
+                return True
+            if st3 not in ("disconnected", "offline", "closed", "close", "destroyed", "expired", ""):
+                # status positivo desconhecido (ex.: INCHAT)
+                if st3 and "disconnect" not in st3:
+                    return True
         return False
 
     @staticmethod
@@ -425,14 +457,21 @@ class ApiBrasilProvider(CommunicationProvider):
         if not isinstance(data, dict):
             return False
         blob = json.dumps(data, default=str).lower()
+        if "inchat" in blob or "in_chat" in blob:
+            return True
+        if "já está conectado" in blob or "ja esta conectado" in blob:
+            return True
         if session.lower() in blob and any(
-            s in blob for s in ("connected", "open", "online", "authenticated", "conectad")
+            s in blob for s in ("connected", "open", "online", "authenticated", "conectad", "inchat")
         ):
             return True
         device = data.get("device")
         if isinstance(device, dict):
-            st = str(device.get("status") or "").lower()
-            if st not in ("disconnected", "offline", "closed", "close", "destroyed", "expired", ""):
+            st = str(device.get("status") or device.get("state") or "").lower()
+            if "inchat" in st or st in ("connected", "open", "online", "authenticated"):
                 return True
+            if st not in ("disconnected", "offline", "closed", "close", "destroyed", "expired", ""):
+                if st and "disconnect" not in st:
+                    return True
         st = str(data.get("status") or data.get("state") or "").lower()
-        return st in ("connected", "open", "online", "authenticated")
+        return st in ("connected", "open", "online", "authenticated", "inchat")

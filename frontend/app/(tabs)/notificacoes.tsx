@@ -86,7 +86,7 @@ export default function NotificacoesScreen() {
     try {
       const res = await whatsappAPI.conectar();
       if (res.data.conectado) {
-        showToast('WhatsApp ja estava conectado.', 'success');
+        showToast('WhatsApp já estava conectado.', 'success');
         await refreshWhatsappStatus();
         return;
       }
@@ -96,11 +96,19 @@ export default function NotificacoesScreen() {
         setPollingWhatsapp(true);
         showToast('Escaneie o QR no seu WhatsApp', 'info');
       } else {
-        showToast(res.data.mensagem || 'Nao foi possivel gerar o QR Code', 'error');
+        showToast(res.data.mensagem || 'Não foi possível gerar o QR Code', 'error');
       }
     } catch (e: any) {
       const msg = e?.response?.data?.detail || 'Erro ao conectar WhatsApp';
-      showToast(typeof msg === 'string' ? msg : 'Erro ao conectar', 'error');
+      const text = typeof msg === 'string' ? msg : 'Erro ao conectar';
+      // Se a API Brasil disser que já está inChat, trate como sucesso e sincronize
+      if (/inchat|já está conectado|ja esta conectado|already connected/i.test(text)) {
+        showToast('WhatsApp já conectado na API Brasil. Sincronizando…', 'success');
+        await refreshWhatsappStatus();
+        await loadData();
+      } else {
+        showToast(text, 'error');
+      }
     } finally {
       setConectandoWhatsapp(false);
     }
@@ -205,12 +213,12 @@ export default function NotificacoesScreen() {
                   {whatsappStatus?.configurado === false
                     ? 'Servidor sem credenciais APIBrasil (.env)'
                     : whatsappStatus?.pronto_para_disparar || whatsappStatus?.conectado
-                      ? 'Escritorio conectado — disparos usam este numero'
-                      : 'Nao conectado — escaneie o QR com o celular do escritorio'}
+                      ? 'Escritório conectado — disparos usam este número'
+                      : 'Não conectado — escaneie o QR com o celular do escritório'}
                 </Text>
               </View>
               {whatsappStatus?.session ? (
-                <Text style={styles.hintText}>Sessao: {whatsappStatus.session}</Text>
+                <Text style={styles.hintText}>Sessão: {whatsappStatus.session}</Text>
               ) : null}
               {whatsappStatus?.configurado !== false && !whatsappStatus?.conectado && (
                 <TouchableOpacity
@@ -223,7 +231,7 @@ export default function NotificacoesScreen() {
                   ) : (
                     <>
                       <Ionicons name="qr-code-outline" size={18} color="#FFF" />
-                      <Text style={styles.connectBtnText}>Conectar WhatsApp do escritorio</Text>
+                      <Text style={styles.connectBtnText}>Conectar WhatsApp do escritório</Text>
                     </>
                   )}
                 </TouchableOpacity>

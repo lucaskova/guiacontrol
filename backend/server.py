@@ -2859,6 +2859,16 @@ async def whatsapp_conectar(
                 }
             },
         )
+        return {
+            "session": wa_session,
+            "conectado": True,
+            "qrcode_data_uri": resultado.get("qrcode_data_uri"),
+            "send_session_enabled": os.getenv("APIBRASIL_SEND_SESSION", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
+            "mensagem": "WhatsApp ja conectado. Os disparos usarao este numero do escritorio.",
+            "detalhes": resultado,
+        }
+
     if not resultado.get("sucesso") and not resultado.get("qrcode_data_uri"):
         raise HTTPException(
             status_code=502,
