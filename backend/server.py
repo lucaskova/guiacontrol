@@ -2764,7 +2764,7 @@ async def enviar_notificacao_teste(
     
     return {
         "sucesso": True,
-        "mensagem": "Mensagem de teste agendada na Central de Comunicação",
+        "mensagem": "Mensagem de teste enviada para a fila — deve chegar em segundos no WhatsApp.",
         "detalhes": resultado,
     }
 

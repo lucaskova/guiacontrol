@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from communication.circuit_breaker import CircuitBreaker
 from communication.delay import random_send_delay
-from communication.domain import EventStatus, LogStatus
+from communication.domain import EventStatus, LogStatus, CommunicationEventType
 from communication.providers.factory import get_communication_provider
 from communication.queue.client import get_queue
 from communication.rate_limiter import RateLimiter
@@ -22,6 +22,11 @@ from communication.settings.service import SettingsService
 from communication.templates.service import TemplateService
 
 logger = logging.getLogger("communication.workers")
+
+_IMMEDIATE_EVENTS = {
+    CommunicationEventType.TEST_MESSAGE.value,
+    CommunicationEventType.MANUAL_REMINDER.value,
+}
 
 
 class MessageWorker:
@@ -92,38 +97,41 @@ class MessageWorker:
         await self.events.update(event_id, status=EventStatus.PROCESSING.value)
         accountant_id = event.get("accountant_id")
         settings = await self.settings.get(accountant_id)
+        event_name = event.get("event")
+        immediate = event_name in _IMMEDIATE_EVENTS
 
-        # Re-checa janela no momento do processamento
-        allowed_now, next_slot = within_send_window(settings)
-        if not allowed_now and next_slot is not None:
-            from datetime import timezone as tz
+        # Re-checa janela no momento do processamento (exceto teste/manual)
+        if not immediate:
+            allowed_now, next_slot = within_send_window(settings)
+            if not allowed_now and next_slot is not None:
+                from datetime import timezone as tz
 
-            now = datetime.now(tz.utc)
-            slot = next_slot
-            if slot.tzinfo is None:
-                from zoneinfo import ZoneInfo
+                now = datetime.now(tz.utc)
+                slot = next_slot
+                if slot.tzinfo is None:
+                    from zoneinfo import ZoneInfo
 
-                slot = slot.replace(tzinfo=ZoneInfo(settings.timezone))
-            delay = max(0.0, (slot.astimezone(tz.utc) - now).total_seconds())
-            delay += random_send_delay(settings.delay_min_seconds, settings.delay_max_seconds)
-            queue = await get_queue()
-            await queue.enqueue({"event_id": event_id, "accountant_id": accountant_id}, delay_seconds=delay)
-            await self.events.update(
-                event_id,
-                status=EventStatus.SCHEDULED.value,
-                scheduled_for=slot.astimezone(tz.utc),
-            )
-            await self.logs.create(
-                {
-                    "event_id": event_id,
-                    "accountant_id": accountant_id,
-                    "status": LogStatus.DELAYED.value,
-                    "error": "Reagendado: fora da janela",
-                    "worker": self.worker_id,
-                    "delay_seconds": delay,
-                }
-            )
-            return
+                    slot = slot.replace(tzinfo=ZoneInfo(settings.timezone))
+                delay = max(0.0, (slot.astimezone(tz.utc) - now).total_seconds())
+                delay += random_send_delay(settings.delay_min_seconds, settings.delay_max_seconds)
+                queue = await get_queue()
+                await queue.enqueue({"event_id": event_id, "accountant_id": accountant_id}, delay_seconds=delay)
+                await self.events.update(
+                    event_id,
+                    status=EventStatus.SCHEDULED.value,
+                    scheduled_for=slot.astimezone(tz.utc),
+                )
+                await self.logs.create(
+                    {
+                        "event_id": event_id,
+                        "accountant_id": accountant_id,
+                        "status": LogStatus.DELAYED.value,
+                        "error": "Reagendado: fora da janela",
+                        "worker": self.worker_id,
+                        "delay_seconds": delay,
+                    }
+                )
+                return
 
         payload = event.get("payload") or {}
         empresa_id = event.get("company_id") or payload.get("empresa_id") or ""

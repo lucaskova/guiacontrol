@@ -143,7 +143,10 @@ export default function NotificacoesScreen() {
         mensagem: '✅ Teste de notificação do GuiaControl! Se você recebeu esta mensagem, a integração WhatsApp está funcionando.',
       });
       if (res.data.sucesso) {
-        showToast('Mensagem de teste enviada!', 'success');
+        showToast(
+          res.data.mensagem || 'Mensagem de teste enviada! Confira o WhatsApp em alguns segundos.',
+          'success'
+        );
         setShowTestModal(false);
         setTestPhone('');
       } else {
