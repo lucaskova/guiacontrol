@@ -2756,12 +2756,19 @@ async def enviar_notificacao_teste(
                 detail="Conecte seu WhatsApp em Notificacoes > Configuracoes (QR Code) antes de enviar.",
             )
 
-    resultado = await get_center().emit_test(
-        accountant_id=user["user_id"],
-        phone=telefone,
-        mensagem=mensagem,
-    )
-    
+    try:
+        resultado = await get_center().emit_test(
+            accountant_id=user["user_id"],
+            phone=telefone,
+            mensagem=mensagem,
+        )
+    except Exception as e:
+        logger.exception("Falha ao agendar mensagem de teste: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao agendar mensagem de teste: {e}",
+        ) from e
+
     return {
         "sucesso": True,
         "mensagem": "Mensagem de teste enviada para a fila — deve chegar em segundos no WhatsApp.",

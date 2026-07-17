@@ -27,11 +27,23 @@ class EventsRepository:
         await self.col.create_index("status")
         await self.col.create_index("accountant_id")
         await self.col.create_index("created_at")
-        await self.col.create_index([("dedupe_key", 1)], unique=True, sparse=True)
+        # Remove índice antigo unique+sparse (colidia em dedupe_key=null)
+        for stale in ("dedupe_key_1", "dedupe_key_unique_sparse"):
+            try:
+                await self.col.drop_index(stale)
+            except Exception:
+                pass
+        # partialFilterExpression: só indexa quando há string (permite vários sem dedupe)
+        await self.col.create_index(
+            [("dedupe_key", 1)],
+            unique=True,
+            partialFilterExpression={"dedupe_key": {"$type": "string"}},
+            name="dedupe_key_unique_partial",
+        )
         await self.col.create_index([("event", 1), ("status", 1)])
 
     async def create(self, data: CommunicationEventCreate) -> dict[str, Any]:
-        doc = {
+        doc: dict[str, Any] = {
             "id": f"cevt_{uuid.uuid4().hex}",
             "company_id": data.company_id,
             "accountant_id": data.accountant_id,
@@ -41,13 +53,16 @@ class EventsRepository:
             "status": EventStatus.PENDING.value,
             "attempts": 0,
             "priority": data.priority.value if isinstance(data.priority, MessagePriority) else str(data.priority),
-            "dedupe_key": data.dedupe_key,
             "cancel_reason": None,
             "created_at": _now(),
             "processed_at": None,
             "next_retry": None,
             "scheduled_for": None,
         }
+        # Não gravar dedupe_key=null: índice unique+sparse ainda indexa null e
+        # quebra o 2º teste/lembrete sem dedupe (E11000 duplicate key).
+        if data.dedupe_key:
+            doc["dedupe_key"] = data.dedupe_key
         await self.col.insert_one(doc)
         doc.pop("_id", None)
         return doc
