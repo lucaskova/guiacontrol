@@ -868,6 +868,50 @@ def _formatar_valor_br(valor: float) -> str:
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+async def _emit_nova_guia_whatsapp(
+    *,
+    user_id: str,
+    empresa: dict,
+    guia: dict,
+    reminder_kind: str = "nova_guia",
+) -> bool:
+    """Agenda WhatsApp de nova guia via CommunicationCenter. Retorna True se enfileirou."""
+    whatsapp = empresa.get("whatsapp") or empresa.get("telefone")
+    if not whatsapp or not empresa.get("notificacoes_whatsapp", True):
+        return False
+
+    empresa_id = empresa.get("empresa_id") or guia.get("empresa_id") or ""
+    link = await _link_portal_cliente(empresa_id)
+    valor_fmt = _formatar_valor_br(float(guia.get("valor") or 0))
+    venc_raw = guia.get("data_vencimento")
+    venc_fmt = _formatar_data_br(venc_raw) or str(venc_raw or "")
+    link_block = ""
+    if link:
+        link_block = (
+            f"\n\n*Seu link (abrir no celular):* {link}\n"
+            "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
+            "ou *anexar comprovante* sem depender do escritório."
+        )
+    center = get_center()
+    await center.emit_guide_reminder(
+        accountant_id=user_id,
+        empresa_id=empresa_id,
+        guia_id=guia["guia_id"],
+        event_type=CommunicationEventType.GUIDE_CREATED,
+        reminder_kind=reminder_kind,
+        payload={
+            "phone": whatsapp,
+            "tipo": guia.get("tipo"),
+            "competencia": guia.get("competencia") or guia.get("tipo"),
+            "valor_fmt": valor_fmt,
+            "vencimento_fmt": venc_fmt,
+            "link": link,
+            "link_block": link_block,
+        },
+    )
+    return True
+
+
 async def verificar_e_notificar_guias(user_id: Optional[str] = None):
     """
     Agenda lembretes via CommunicationCenter (eventos → fila → worker).
@@ -2082,26 +2126,38 @@ async def public_portal_marcar_guia_paga(
 async def criar_guia(
     guia_data: GuiaCreate,
     session_token: Optional[str] = Cookie(None),
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
 ):
     """Cria uma nova guia"""
     user = await get_current_user(session_token, authorization)
-    
-    logger.info(f"Criando guia - dados recebidos: empresa_id={guia_data.empresa_id}, tipo={guia_data.tipo}, valor={guia_data.valor}, data_vencimento={guia_data.data_vencimento}")
-    
-    # Verificar se empresa existe e pertence ao usuário
+    return await _criar_guia_interna(
+        user=user,
+        guia_data=guia_data,
+        emit_created=True,
+    )
+
+
+async def _criar_guia_interna(
+    *,
+    user: dict,
+    guia_data: GuiaCreate,
+    emit_created: bool = True,
+    reminder_kind: str = "nova_guia",
+) -> dict:
+    """Persistência compartilhada entre cadastro unitário e lote."""
+    logger.info(
+        f"Criando guia - dados recebidos: empresa_id={guia_data.empresa_id}, "
+        f"tipo={guia_data.tipo}, valor={guia_data.valor}, data_vencimento={guia_data.data_vencimento}"
+    )
+
     empresa = await db.empresas.find_one({
         "empresa_id": guia_data.empresa_id,
-        "user_id": user["user_id"]
+        "user_id": user["user_id"],
     })
-    
+
     if not empresa:
-        raise HTTPException(
-            status_code=404, 
-            detail="Empresa não encontrada"
-        )
-    
-    # Normalizar data para formato YYYY-MM-DD
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+
     data_vencimento_normalizada = guia_data.data_vencimento
     formatos = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"]
     data_parseada = False
@@ -2113,40 +2169,38 @@ async def criar_guia(
             break
         except ValueError:
             continue
-    
+
     if not data_parseada:
         logger.error(f"Formato de data inválido: {guia_data.data_vencimento}")
         raise HTTPException(
             status_code=400,
-            detail=f"Formato de data inválido: '{guia_data.data_vencimento}'. Use YYYY-MM-DD ou DD/MM/YYYY"
+            detail=f"Formato de data inválido: '{guia_data.data_vencimento}'. Use YYYY-MM-DD ou DD/MM/YYYY",
         )
-    
-    # Calcular status inicial
+
     try:
         status = calcular_status_guia(data_vencimento_normalizada, "a_vencer")
     except ValueError as e:
         logger.error(f"Erro ao calcular status: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-    
-    # Extrair nome e tipo do arquivo se houver
+
     nome_arquivo = None
     tipo_arquivo = None
     if guia_data.arquivo_guia:
-        # Tentar detectar o tipo pelo prefixo base64
-        if guia_data.arquivo_guia.startswith('data:application/pdf'):
-            tipo_arquivo = 'PDF'
+        if guia_data.arquivo_guia.startswith("data:application/pdf"):
+            tipo_arquivo = "PDF"
             nome_arquivo = f'guia_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
-        elif guia_data.arquivo_guia.startswith('data:image/jpeg') or guia_data.arquivo_guia.startswith('data:image/jpg'):
-            tipo_arquivo = 'JPG'
+        elif guia_data.arquivo_guia.startswith("data:image/jpeg") or guia_data.arquivo_guia.startswith(
+            "data:image/jpg"
+        ):
+            tipo_arquivo = "JPG"
             nome_arquivo = f'guia_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jpg'
-        elif guia_data.arquivo_guia.startswith('data:image/png'):
-            tipo_arquivo = 'PNG'
+        elif guia_data.arquivo_guia.startswith("data:image/png"):
+            tipo_arquivo = "PNG"
             nome_arquivo = f'guia_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
         else:
-            tipo_arquivo = 'DESCONHECIDO'
+            tipo_arquivo = "DESCONHECIDO"
             nome_arquivo = f'guia_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-    
-    # Criar guia
+
     guia_id = f"guia_{uuid.uuid4().hex[:12]}"
     guia_doc = {
         "guia_id": guia_id,
@@ -2167,16 +2221,22 @@ async def criar_guia(
         "nome_arquivo_guia": nome_arquivo,
         "tipo_arquivo_guia": tipo_arquivo,
         "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
+        "updated_at": datetime.now(timezone.utc),
     }
-    
+
     await db.guias.insert_one(guia_doc)
-    
-    # Retornar sem _id
-    guia = await db.guias.find_one(
-        {"guia_id": guia_id},
-        {"_id": 0}
-    )
+
+    guia = await db.guias.find_one({"guia_id": guia_id}, {"_id": 0})
+    if emit_created and guia:
+        try:
+            await _emit_nova_guia_whatsapp(
+                user_id=user["user_id"],
+                empresa=empresa,
+                guia=guia,
+                reminder_kind=reminder_kind,
+            )
+        except Exception as ex:
+            logger.warning(f"Falha ao agendar WhatsApp de nova guia {guia_id}: {ex}")
     return guia
 
 
@@ -2201,6 +2261,7 @@ async def criar_guias_lote(
 
     wctx = await _whatsapp_ctx_usuario(user["user_id"])
     wa_session = wctx["session"] if wctx.get("conectado") else None
+    emit_lote = bool(body.enviar_notificacoes and wa_session)
 
     for item in body.itens:
         if item.empresa_id not in emp_map:
@@ -2236,7 +2297,12 @@ async def criar_guias_lote(
                 competencia=item.competencia,
                 arquivo_guia=item.arquivo_guia,
             )
-            guia = await criar_guia(guia_create, session_token, authorization)
+            guia = await _criar_guia_interna(
+                user=user,
+                guia_data=guia_create,
+                emit_created=emit_lote,
+                reminder_kind="nova_guia_lote",
+            )
             if item.nome_arquivo_guia or item.tipo_arquivo_guia:
                 await db.guias.update_one(
                     {"guia_id": guia["guia_id"]},
@@ -2249,38 +2315,10 @@ async def criar_guias_lote(
                 )
             criadas.append(guia)
             guias_db.append(guia)
-
-            if body.enviar_notificacoes and wa_session:
+            if emit_lote:
                 emp = emp_map[item.empresa_id]
                 whatsapp = emp.get("whatsapp") or emp.get("telefone")
                 if whatsapp and emp.get("notificacoes_whatsapp", True):
-                    link = await _link_portal_cliente(item.empresa_id)
-                    valor_fmt = _formatar_valor_br(float(item.valor))
-                    venc_fmt = _formatar_data_br(item.data_vencimento) or str(item.data_vencimento)
-                    link_block = ""
-                    if link:
-                        link_block = (
-                            f"\n\n*Seu link (abrir no celular):* {link}\n"
-                            "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
-                            "ou *anexar comprovante* sem depender do escritório."
-                        )
-                    center = get_center()
-                    await center.emit_guide_reminder(
-                        accountant_id=user["user_id"],
-                        empresa_id=item.empresa_id,
-                        guia_id=guia["guia_id"],
-                        event_type=CommunicationEventType.GUIDE_CREATED,
-                        reminder_kind="nova_guia_lote",
-                        payload={
-                            "phone": whatsapp,
-                            "tipo": item.tipo,
-                            "competencia": item.competencia or item.tipo,
-                            "valor_fmt": valor_fmt,
-                            "vencimento_fmt": venc_fmt,
-                            "link": link,
-                            "link_block": link_block,
-                        },
-                    )
                     notificacoes_enviadas += 1
         except HTTPException as ex:
             erros.append({"temp_id": item.temp_id, "erro": ex.detail})

@@ -46,11 +46,30 @@ Você vai publicar 3 coisas em domínios diferentes:
    | `PUBLIC_CLIENT_BASE_URL` | `https://app.SEUDOMINIO.com` |
    | `ADMIN_EMAILS` | `lucaskova95@gmail.com` |
    | `CORS_ALLOW_ORIGINS` | `https://app.SEUDOMINIO.com,https://SEUDOMINIO.com` |
+   | `REDIS_URL` | (Redis Cloud / Upstash / Redis no Docker) |
+   | `CRON_SECRET` | (segredo longo — o mesmo do GitHub Actions) |
 
 5. **Create Web Service**. Aguarde o build (3-5 min).
 6. Anote a URL que o Render gerou: algo como `https://guiacontrol-api.onrender.com`. Essa é a sua API.
 
 > **Importante:** o plano Free do Render hiberna após 15 min sem requisições. A primeira requisição depois disso demora ~30s.
+
+---
+
+## 2.1) Cron automático de lembretes (GitHub Actions)
+
+O job `POST /api/cron/notificacoes-vencimento` agenda D-7 / D-3 / D-0 / pós-vencimento via CommunicationCenter. O workflow `.github/workflows/cron-notificacoes.yml` chama esse endpoint **todo dia às 08:00 (Brasília)**.
+
+1. No GitHub do repositório → **Settings → Secrets and variables → Actions → New repository secret**:
+
+   | Secret | Valor |
+   |--------|-------|
+   | `API_BASE_URL` | `https://guiacontrol-api.onrender.com` (sem barra no final) |
+   | `CRON_SECRET` | o **mesmo** valor de `CRON_SECRET` no Render |
+
+2. Confirme que o Render tem `CRON_SECRET` configurado (senão a API responde 503).
+3. Teste: **Actions → Cron — notificações de vencimento → Run workflow**.
+4. No app, a tela **Notificações → Executar job** continua disponível para disparo manual.
 
 ---
 
@@ -94,6 +113,8 @@ Você vai publicar 3 coisas em domínios diferentes:
 - [ ] Acesse `https://app.seudominio.com/login` e crie a conta com o e-mail listado em `ADMIN_EMAILS`.
 - [ ] Verifique se o botão **"Painel admin"** aparece no header.
 - [ ] Em `/admin/config` veja se aparece **API Brasil: Configurada**.
+- [ ] Configure `CRON_SECRET` no Render + secrets `API_BASE_URL` / `CRON_SECRET` no GitHub Actions (seção 2.1).
+- [ ] Rode o workflow **Cron — notificações de vencimento** manualmente uma vez e confira HTTP 200.
 - [ ] Cadastre uma empresa e dispare um lembrete WhatsApp pra testar a integração.
 - [ ] Verifique se o link `https://app.seudominio.com/cliente/<token>` funciona (no portal do cliente).
 

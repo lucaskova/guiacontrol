@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,9 +13,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import { format, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { fetchPortalCliente, portalMarcarPaga } from '../../services/api';
 import { FileUpload } from '../../components/FileUpload';
-import { formatCurrency, formatDate, formatCNPJ, getStatusColor, getStatusText } from '../../utils/formatters';
+import { formatCurrency, formatDate, formatCNPJ, getStatusText } from '../../utils/formatters';
 import { GuiaQrCode } from '../../components/GuiaQrCode';
 import { useToast } from '../../contexts/ToastContext';
 import { premium, getStatusPremium } from '../../theme/premium';
@@ -35,6 +37,33 @@ type GuiaPub = {
   qr_code_pix?: string | null;
   observacoes?: string | null;
 };
+
+const MES_TODOS = 'todos';
+
+function mesAtualKey(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthKeyFromDate(iso?: string | null): string | null {
+  if (!iso || iso.length < 7) return null;
+  return iso.slice(0, 7);
+}
+
+function formatMonthLabel(ym: string): string {
+  try {
+    return format(parseISO(`${ym}-01`), 'MMM yyyy', { locale: ptBR });
+  } catch {
+    return ym;
+  }
+}
+
+function guiaNoMes(g: GuiaPub, mes: string): boolean {
+  if (mes === MES_TODOS) return true;
+  const venc = monthKeyFromDate(g.data_vencimento);
+  const pag = monthKeyFromDate(g.data_pagamento);
+  return venc === mes || pag === mes;
+}
 
 function portalPayError(error: unknown): string {
   const d = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -60,10 +89,56 @@ export default function ClientePortalScreen() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [comprovanteB64, setComprovanteB64] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<string>(mesAtualKey);
 
   useEffect(() => {
     setComprovanteB64(null);
   }, [expandedId]);
+
+  const monthOptions = useMemo(() => {
+    const keys = new Set<string>([mesAtualKey()]);
+    for (const g of guias) {
+      const venc = monthKeyFromDate(g.data_vencimento);
+      const pag = monthKeyFromDate(g.data_pagamento);
+      if (venc) keys.add(venc);
+      if (pag) keys.add(pag);
+    }
+    return [MES_TODOS, ...Array.from(keys).sort((a, b) => b.localeCompare(a))];
+  }, [guias]);
+
+  const guiasFiltradas = useMemo(
+    () => guias.filter((g) => guiaNoMes(g, selectedMonth)),
+    [guias, selectedMonth],
+  );
+
+  const relatorio = useMemo(() => {
+    const noEscopo =
+      selectedMonth === MES_TODOS
+        ? guias
+        : guias.filter((g) => guiaNoMes(g, selectedMonth));
+
+    const pagasNoMes = guias.filter((g) => {
+      if (g.status !== 'paga') return false;
+      if (selectedMonth === MES_TODOS) return true;
+      return monthKeyFromDate(g.data_pagamento) === selectedMonth;
+    });
+
+    const abertasNoMes = noEscopo.filter((g) => g.status !== 'paga');
+
+    const porTipo: Record<string, number> = {};
+    for (const g of pagasNoMes) {
+      const tipo = (g.tipo || 'Outros').toUpperCase();
+      porTipo[tipo] = (porTipo[tipo] || 0) + (Number(g.valor) || 0);
+    }
+
+    return {
+      totalPago: pagasNoMes.reduce((s, g) => s + (Number(g.valor) || 0), 0),
+      qtdPagas: pagasNoMes.length,
+      totalAberto: abertasNoMes.reduce((s, g) => s + (Number(g.valor) || 0), 0),
+      qtdAbertas: abertasNoMes.length,
+      porTipo: Object.entries(porTipo).sort((a, b) => b[1] - a[1]),
+    };
+  }, [guias, selectedMonth]);
 
   const copyText = async (text: string, label: string) => {
     try {
@@ -212,13 +287,97 @@ export default function ClientePortalScreen() {
           </View>
         </View>
 
+        <View style={styles.reportSection}>
+          <Text style={styles.reportSectionTitle}>Relatório mensal</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.monthChips}
+          >
+            {monthOptions.map((mes) => {
+              const active = selectedMonth === mes;
+              const label = mes === MES_TODOS ? 'Todos' : formatMonthLabel(mes);
+              return (
+                <TouchableOpacity
+                  key={mes}
+                  style={[styles.monthChip, active && styles.monthChipActive]}
+                  onPress={() => setSelectedMonth(mes)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.monthChipText, active && styles.monthChipTextActive]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          <View style={styles.financeCard}>
+            <View style={styles.financeHeader}>
+              <View style={styles.financeIconWrap}>
+                <Ionicons name="stats-chart" size={18} color="#059669" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.financeLabel}>Impostos pagos no período</Text>
+                <Text style={styles.financePeriod}>
+                  {selectedMonth === MES_TODOS
+                    ? 'Todo o histórico'
+                    : formatMonthLabel(selectedMonth)}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.financeTotal}>{formatCurrency(relatorio.totalPago)}</Text>
+            <Text style={styles.financeCount}>
+              {relatorio.qtdPagas === 0
+                ? 'Nenhuma guia paga neste período'
+                : `${relatorio.qtdPagas} guia${relatorio.qtdPagas === 1 ? '' : 's'} paga${relatorio.qtdPagas === 1 ? '' : 's'}`}
+            </Text>
+
+            {relatorio.porTipo.length > 0 ? (
+              <View style={styles.tipoBreakdown}>
+                {relatorio.porTipo.map(([tipo, valor]) => (
+                  <View key={tipo} style={styles.tipoRow}>
+                    <Text style={styles.tipoName}>{tipo}</Text>
+                    <Text style={styles.tipoValor}>{formatCurrency(valor)}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <View style={styles.financeSplit}>
+              <View style={styles.financeSplitItem}>
+                <Text style={styles.financeSplitLabel}>Em aberto</Text>
+                <Text style={[styles.financeSplitValue, { color: '#D97706' }]}>
+                  {formatCurrency(relatorio.totalAberto)}
+                </Text>
+                <Text style={styles.financeSplitMeta}>
+                  {relatorio.qtdAbertas} guia{relatorio.qtdAbertas === 1 ? '' : 's'}
+                </Text>
+              </View>
+              <View style={styles.financeSplitDivider} />
+              <View style={styles.financeSplitItem}>
+                <Text style={styles.financeSplitLabel}>Guias no filtro</Text>
+                <Text style={styles.financeSplitValue}>{guiasFiltradas.length}</Text>
+                <Text style={styles.financeSplitMeta}>listadas abaixo</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
         {guias.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="document-text-outline" size={40} color="#9CA3AF" />
             <Text style={styles.emptyText}>Nenhuma guia cadastrada ainda.</Text>
           </View>
+        ) : guiasFiltradas.length === 0 ? (
+          <View style={styles.empty}>
+            <Ionicons name="calendar-outline" size={40} color="#9CA3AF" />
+            <Text style={styles.emptyText}>
+              Nenhuma guia neste mês. Escolha outro período acima.
+            </Text>
+          </View>
         ) : (
-          guias.map((g) => {
+          guiasFiltradas.map((g) => {
             const open = expandedId === g.guia_id;
             const st = getStatusPremium(g.status);
             const hasPay =
@@ -414,6 +573,77 @@ const styles = StyleSheet.create({
   heroSub: { color: '#E0E7FF', fontSize: 14, marginTop: 4 },
   heroHint: { color: '#C7D2FE', fontSize: 12, marginTop: 10, lineHeight: 18 },
   installSlot: { marginTop: 14 },
+  reportSection: { marginBottom: 8 },
+  reportSectionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#374151',
+    letterSpacing: 0.4,
+    marginBottom: 10,
+    textTransform: 'uppercase',
+  },
+  monthChips: { gap: 8, paddingBottom: 12 },
+  monthChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  monthChipActive: {
+    backgroundColor: '#1E3A8A',
+    borderColor: '#1E3A8A',
+  },
+  monthChipText: { fontSize: 13, fontWeight: '600', color: '#4B5563', textTransform: 'capitalize' },
+  monthChipTextActive: { color: '#FFFFFF' },
+  financeCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    ...Platform.select({
+      web: { boxShadow: '0 4px 16px rgba(5, 150, 105, 0.08)' } as object,
+      default: {},
+    }),
+  },
+  financeHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
+  financeIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  financeLabel: { fontSize: 13, fontWeight: '700', color: '#111827' },
+  financePeriod: { fontSize: 12, color: '#6B7280', marginTop: 2, textTransform: 'capitalize' },
+  financeTotal: { fontSize: 28, fontWeight: '800', color: '#059669', letterSpacing: -0.5 },
+  financeCount: { fontSize: 13, color: '#6B7280', marginTop: 4, marginBottom: 4 },
+  tipoBreakdown: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    gap: 8,
+  },
+  tipoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  tipoName: { fontSize: 13, fontWeight: '600', color: '#4B5563' },
+  tipoValor: { fontSize: 13, fontWeight: '700', color: '#111827' },
+  financeSplit: {
+    flexDirection: 'row',
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  financeSplitItem: { flex: 1 },
+  financeSplitDivider: { width: 1, backgroundColor: '#E5E7EB', marginHorizontal: 12 },
+  financeSplitLabel: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', letterSpacing: 0.4 },
+  financeSplitValue: { fontSize: 16, fontWeight: '800', color: '#111827', marginTop: 4 },
+  financeSplitMeta: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
