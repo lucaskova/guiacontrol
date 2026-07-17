@@ -165,8 +165,15 @@ export default function NotificacoesScreen() {
         showToast(msg, 'error');
       }
       loadData();
-    } catch (error) {
-      showToast('Erro ao enviar teste', 'error');
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      const msg =
+        typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((d: any) => d?.msg).filter(Boolean).join(', ')
+            : error?.message || 'Erro ao enviar teste';
+      showToast(msg, 'error');
     } finally { setEnviandoTeste(false); }
   };
 
