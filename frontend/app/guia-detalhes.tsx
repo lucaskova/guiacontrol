@@ -226,7 +226,7 @@ export default function GuiaDetalhesScreen() {
               <View style={styles.infoRow}>
                 <Ionicons name="document-text" size={18} color="#6B7280" />
                 <View style={styles.infoContent}>
-                  <Text style={styles.infoLabel}>Observaç\u00f5es</Text>
+                  <Text style={styles.infoLabel}>Observações</Text>
                   <Text style={styles.infoValue}>{guia.observacoes}</Text>
                 </View>
               </View>

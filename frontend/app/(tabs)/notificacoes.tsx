@@ -133,14 +133,14 @@ export default function NotificacoesScreen() {
 
   const handleEnviarTeste = async () => {
     if (!testPhone.trim()) {
-      showToast('Digite um n\u00famero de telefone', 'error');
+      showToast('Digite um número de telefone', 'error');
       return;
     }
     setEnviandoTeste(true);
     try {
       const res = await notificacoesAPI.enviarTeste({
         telefone: testPhone,
-        mensagem: '\u2705 Teste de notifica\u00e7\u00e3o do GuiaControl! Se voc\u00ea recebeu esta mensagem, a integra\u00e7\u00e3o WhatsApp est\u00e1 funcionando.',
+        mensagem: '✅ Teste de notificação do GuiaControl! Se você recebeu esta mensagem, a integração WhatsApp está funcionando.',
       });
       if (res.data.sucesso) {
         showToast('Mensagem de teste enviada!', 'success');
@@ -171,18 +171,18 @@ export default function NotificacoesScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Notifica\u00e7\u00f5es</Text>
+        <Text style={styles.headerTitle}>Notificações</Text>
       </View>
 
       {/* Tabs */}
       <View style={styles.tabs}>
         <TouchableOpacity style={[styles.tab, tab === 'historico' && styles.tabActive]} onPress={() => setTab('historico')}>
           <Ionicons name="time-outline" size={16} color={tab === 'historico' ? '#1E40AF' : '#6B7280'} />
-          <Text style={[styles.tabText, tab === 'historico' && styles.tabTextActive]}>Hist\u00f3rico</Text>
+          <Text style={[styles.tabText, tab === 'historico' && styles.tabTextActive]}>Histórico</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.tab, tab === 'config' && styles.tabActive]} onPress={() => setTab('config')}>
           <Ionicons name="settings-outline" size={16} color={tab === 'config' ? '#1E40AF' : '#6B7280'} />
-          <Text style={[styles.tabText, tab === 'config' && styles.tabTextActive]}>Configura\u00e7\u00f5es</Text>
+          <Text style={[styles.tabText, tab === 'config' && styles.tabTextActive]}>Configurações</Text>
         </TouchableOpacity>
       </View>
 
@@ -243,13 +243,13 @@ export default function NotificacoesScreen() {
                 <View style={[styles.statusDot, { backgroundColor: '#D97706' }]} />
                 <Text style={styles.statusText}>Simulado (sem chave configurada)</Text>
               </View>
-              <Text style={styles.hintText}>Quando uma chave SendGrid for configurada, os emails ser\u00e3o enviados de verdade.</Text>
+              <Text style={styles.hintText}>Quando uma chave SendGrid for configurada, os emails serão enviados de verdade.</Text>
             </View>
 
             {/* Job Manual */}
             <View style={styles.card}>
-              <Text style={styles.sectionTitle}>JOB DI\u00c1RIO</Text>
-              <Text style={styles.hintText}>Verifica guias vencidas e a vencer (D-2) e envia notifica\u00e7\u00f5es autom\u00e1ticas para as empresas que t\u00eam WhatsApp ou email cadastrado.</Text>
+              <Text style={styles.sectionTitle}>JOB DIÁRIO</Text>
+              <Text style={styles.hintText}>Verifica guias vencidas e a vencer (D-2) e envia notificações automáticas para as empresas que têm WhatsApp ou email cadastrado.</Text>
               <TouchableOpacity
                 style={[styles.jobBtn, executandoJob && { opacity: 0.5 }]}
                 onPress={handleExecutarJob}
@@ -268,11 +268,11 @@ export default function NotificacoesScreen() {
               <Text style={styles.sectionTitle}>COMO FUNCIONA</Text>
               <View style={styles.infoItem}>
                 <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                <Text style={styles.infoText}>Guia vencida \u2192 Notifica\u00e7\u00e3o imediata</Text>
+                <Text style={styles.infoText}>Guia vencida → Notificação imediata</Text>
               </View>
               <View style={styles.infoItem}>
                 <Ionicons name="time" size={18} color="#D97706" />
-                <Text style={styles.infoText}>Guia vence em 2 dias \u2192 Lembrete</Text>
+                <Text style={styles.infoText}>Guia vence em 2 dias → Lembrete</Text>
               </View>
               <View style={styles.infoItem}>
                 <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
@@ -348,7 +348,7 @@ export default function NotificacoesScreen() {
             {notificacoes.length === 0 ? (
               <View style={styles.emptyBox}>
                 <Ionicons name="notifications-off-outline" size={48} color="#D1D5DB" />
-                <Text style={styles.emptyText}>Nenhuma notifica\u00e7\u00e3o enviada</Text>
+                <Text style={styles.emptyText}>Nenhuma notificação enviada</Text>
                 <Text style={styles.emptySubText}>Execute o job ou configure dados de contato nas empresas</Text>
               </View>
             ) : (
@@ -437,7 +437,7 @@ export default function NotificacoesScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Testar WhatsApp</Text>
-            <Text style={styles.modalDesc}>Digite o n\u00famero para enviar uma mensagem de teste</Text>
+            <Text style={styles.modalDesc}>Digite o número para enviar uma mensagem de teste</Text>
             <TextInput
               style={styles.modalInput}
               placeholder="(51) 99999-9999"
