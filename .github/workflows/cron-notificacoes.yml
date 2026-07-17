@@ -1,0 +1,47 @@
+# Dispara lembretes automáticos (D-7, D-3, D-0, atraso) via CommunicationCenter.
+# Roda diariamente no início da janela de envio (08:00 America/Sao_Paulo).
+#
+# Secrets necessários no repositório GitHub:
+#   API_BASE_URL  — ex.: https://guiacontrol-api.onrender.com
+#   CRON_SECRET   — mesmo valor configurado no Render (env CRON_SECRET)
+
+name: Cron — notificações de vencimento
+
+on:
+  schedule:
+    # 11:00 UTC = 08:00 BRT (horário de Brasília, sem DST)
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  disparar-lembretes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Chamar job de notificações
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_BASE_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Configure os secrets API_BASE_URL e CRON_SECRET no repositório."
+            exit 1
+          fi
+          BASE="${API_BASE_URL%/}"
+          echo "POST ${BASE}/api/cron/notificacoes-vencimento"
+          # Render Free pode estar hibernando — até ~120s de cold start
+          HTTP_CODE=$(curl -sS -o /tmp/cron-body.json -w "%{http_code}" \
+            --connect-timeout 30 \
+            --max-time 120 \
+            -X POST \
+            -H "X-Cron-Secret: ${CRON_SECRET}" \
+            -H "Accept: application/json" \
+            "${BASE}/api/cron/notificacoes-vencimento")
+          echo "HTTP ${HTTP_CODE}"
+          cat /tmp/cron-body.json || true
+          echo
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Cron falhou com HTTP ${HTTP_CODE}"
+            exit 1
+          fi
