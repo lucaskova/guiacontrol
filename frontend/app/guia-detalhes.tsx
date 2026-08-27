@@ -429,7 +429,7 @@ export default function GuiaDetalhesScreen() {
               editable={!enviandoLembrete}
             />
             <Text style={styles.lembreteHint}>
-              {mensagemExtra.length}/400 — opcional. Se preenchido, vai junto da mensagem.
+              {mensagemExtra.length}/400 — opcional. O link do painel do cliente sempre vai junto.
             </Text>
 
             <View style={styles.lembreteActions}>

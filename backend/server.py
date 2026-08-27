@@ -799,20 +799,15 @@ def _parse_vencimento_para_date(data_venc: str) -> Optional[date]:
 
 
 def _portal_base_url() -> str:
-    """Base do portal do cliente. Prioridade:
-    1. PUBLIC_CLIENT_BASE_URL (recomendado em produção, ex: https://app.seudominio.com)
-    2. WEB_APP_URL (alternativo)
-    3. EXPO_PUBLIC_WEB_APP_URL (mesmo arquivo .env do frontend, útil em testes locais)
-    """
-    for env_name in ("PUBLIC_CLIENT_BASE_URL", "WEB_APP_URL", "EXPO_PUBLIC_WEB_APP_URL"):
-        val = (os.getenv(env_name) or "").strip().rstrip("/")
-        if val:
-            return val
-    return ""
+    from communication.portal import portal_base_url
+
+    return portal_base_url()
 
 
 async def _link_portal_cliente(empresa_id: str) -> str:
-    """URL pública para o cliente ver guias. Vazio só se nem base URL nem portal_token existirem."""
+    """URL pública para o cliente ver guias."""
+    from communication.portal import portal_cliente_url
+
     emp = await db.empresas.find_one({"empresa_id": empresa_id})
     if not emp:
         return ""
@@ -820,10 +815,7 @@ async def _link_portal_cliente(empresa_id: str) -> str:
         await _ensure_empresa_portal_token(empresa_id)
         emp = await db.empresas.find_one({"empresa_id": empresa_id})
     token = (emp or {}).get("portal_token") or ""
-    base = _portal_base_url()
-    if base and token:
-        return f"{base}/cliente/{token}"
-    return ""
+    return portal_cliente_url(token)
 
 
 def _formatar_data_br(data: Any) -> str:
@@ -881,17 +873,13 @@ async def _emit_nova_guia_whatsapp(
         return False
 
     empresa_id = empresa.get("empresa_id") or guia.get("empresa_id") or ""
+    from communication.portal import portal_link_block
+
     link = await _link_portal_cliente(empresa_id)
     valor_fmt = _formatar_valor_br(float(guia.get("valor") or 0))
     venc_raw = guia.get("data_vencimento")
     venc_fmt = _formatar_data_br(venc_raw) or str(venc_raw or "")
-    link_block = ""
-    if link:
-        link_block = (
-            f"\n\n*Seu link (abrir no celular):* {link}\n"
-            "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
-            "ou *anexar comprovante* sem depender do escritório."
-        )
+    link_block = portal_link_block(link)
     center = get_center()
     await center.emit_guide_reminder(
         accountant_id=user_id,
@@ -998,14 +986,10 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
         tipo = guia.get("tipo", "Guia")
         empresa_nome = empresa.get("nome_fantasia") or empresa.get("razao_social", "")
         venc_fmt = _formatar_data_br(data_venc_raw) or str(data_venc_raw)
+        from communication.portal import portal_link_block
+
         link = await _link_portal_cliente(empresa_id)
-        link_block = ""
-        if link:
-            link_block = (
-                f"\n\n*Seu link (abrir no celular):* {link}\n"
-                "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* ou *anexar comprovante* "
-                "sem depender do escritório para isso."
-            )
+        link_block = portal_link_block(link)
 
         if whatsapp and whatsapp_ativo:
             try:

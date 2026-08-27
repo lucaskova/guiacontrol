@@ -75,3 +75,27 @@ def test_send_session_defaults_on():
     p = ApiBrasilProvider()
     assert p._should_send_session() is True
     assert p._require_session() is True
+
+
+def test_portal_link_block_keeps_underscores_clickable():
+    from communication.portal import portal_cliente_url, portal_link_block
+
+    token = "1i-k59ssIQYz5mu4pLYezy27tZaQ_Kmd4Xz9sgDuJbM"
+    url = portal_cliente_url(token, base="https://guiacontrol-app.vercel.app")
+    block = portal_link_block(url)
+    assert url in block
+    assert f"\n{url}\n" in block
+    assert f"*{url}" not in block
+    assert "_Seu link" not in block
+    assert block.startswith("\n\n")
+
+
+def test_ensure_portal_link_appends_when_missing():
+    from communication.portal import ensure_portal_link_in_message, portal_link_block
+
+    url = "https://guiacontrol-app.vercel.app/cliente/abc_def"
+    out = ensure_portal_link_in_message("Lembrete da guia DAS", url, portal_link_block(url))
+    assert url in out
+    assert out.startswith("Lembrete da guia DAS")
+    same = ensure_portal_link_in_message(out, url)
+    assert same.count(url) == 1

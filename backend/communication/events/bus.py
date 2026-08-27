@@ -16,10 +16,12 @@ from communication.settings.service import SettingsService
 
 logger = logging.getLogger("communication.events.bus")
 
-# Teste e lembrete manual não esperam a janela comercial (08h–18h).
+# Teste, lembrete manual e nova guia não esperam a janela comercial (08h–18h).
 _IMMEDIATE_EVENTS = {
     CommunicationEventType.TEST_MESSAGE.value,
     CommunicationEventType.MANUAL_REMINDER.value,
+    CommunicationEventType.GUIDE_CREATED.value,
+    CommunicationEventType.DOCUMENT_AVAILABLE.value,
 }
 
 

@@ -318,7 +318,10 @@ export default function NotificacoesScreen() {
             {/* Job Manual */}
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>JOB DIÁRIO</Text>
-              <Text style={styles.hintText}>Verifica guias e enfileira lembretes automáticos (D-7, D-3, no vencimento e após atraso) para empresas com WhatsApp ou e-mail cadastrado.</Text>
+              <Text style={styles.hintText}>
+                Verifica guias e enfileira lembretes automáticos (D-7, D-3, no vencimento e após atraso).
+                Cada WhatsApp inclui o link do painel do cliente para abrir direto da conversa.
+              </Text>
               <TouchableOpacity
                 style={[styles.jobBtn, executandoJob && { opacity: 0.5 }]}
                 onPress={handleExecutarJob}
@@ -350,6 +353,10 @@ export default function NotificacoesScreen() {
               <View style={styles.infoItem}>
                 <Ionicons name="alert-circle" size={18} color="#DC2626" />
                 <Text style={styles.infoText}>Após vencer → 1 lembrete por dia</Text>
+              </View>
+              <View style={styles.infoItem}>
+                <Ionicons name="link-outline" size={18} color="#1E40AF" />
+                <Text style={styles.infoText}>Todo lembrete inclui o link do painel do cliente</Text>
               </View>
               <View style={styles.infoItem}>
                 <Ionicons name="logo-whatsapp" size={18} color="#25D366" />

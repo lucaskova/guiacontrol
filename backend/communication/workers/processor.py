@@ -26,6 +26,8 @@ logger = logging.getLogger("communication.workers")
 _IMMEDIATE_EVENTS = {
     CommunicationEventType.TEST_MESSAGE.value,
     CommunicationEventType.MANUAL_REMINDER.value,
+    CommunicationEventType.GUIDE_CREATED.value,
+    CommunicationEventType.DOCUMENT_AVAILABLE.value,
 }
 
 
@@ -151,7 +153,19 @@ class MessageWorker:
             active_ids=settings.active_template_ids or None,
         )
 
-        # Mensagem pré-renderizada (manual/test) tem prioridade
+        from communication.portal import (
+            ensure_portal_link_in_message,
+            portal_cliente_url,
+            portal_link_block,
+        )
+
+        link = (payload.get("link") or "").strip()
+        if not link and empresa and empresa.get("portal_token"):
+            link = portal_cliente_url(empresa.get("portal_token") or "")
+        link_block = (payload.get("link_block") or "").strip()
+        if link and (not link_block or link not in link_block):
+            link_block = portal_link_block(link)
+
         rendered = payload.get("rendered_message")
         if not rendered:
             variables = {
@@ -162,15 +176,17 @@ class MessageWorker:
                 "vencimento": payload.get("vencimento_fmt") or payload.get("vencimento") or "",
                 "contador": (accountant or {}).get("name") or "",
                 "telefone": phone or "",
-                "link": payload.get("link") or "",
+                "link": link,
                 "mensagem": payload.get("mensagem") or "",
                 "extra_block": payload.get("extra_block") or "",
-                "link_block": payload.get("link_block") or "",
+                "link_block": link_block,
             }
             if template:
                 rendered = self.templates.render(template, variables)
             else:
                 rendered = variables.get("mensagem") or "Notificacao GuiaControl"
+
+        rendered = ensure_portal_link_in_message(rendered or "", link, link_block)
 
         rule = await self.rules.evaluate(
             settings=settings,

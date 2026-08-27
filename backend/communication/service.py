@@ -115,11 +115,9 @@ class CommunicationCenter:
     ) -> dict[str, Any]:
         link_block = ""
         if link:
-            link_block = (
-                f"\n\n*Seu link (abrir no celular):* {link}\n"
-                "Nele você vê a guia, paga (PIX ou linha digitável) e pode *marcar como paga* "
-                "ou *anexar comprovante* sem depender do escritório."
-            )
+            from communication.portal import portal_link_block
+
+            link_block = portal_link_block(link)
         extra_block = f"\n\n_Recado do escritório:_ {extra}" if extra else ""
         return await self.emit(
             CommunicationEventCreate(
