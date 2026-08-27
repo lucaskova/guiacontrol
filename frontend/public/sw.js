@@ -1,5 +1,5 @@
 /* GuiaControl Service Worker — versão simples (offline shell) */
-const CACHE = 'guiacontrol-shell-v2';
+const CACHE = 'guiacontrol-shell-v3';
 const PRECACHE = [
   '/',
   '/manifest.webmanifest',
@@ -45,11 +45,7 @@ self.addEventListener('fetch', (event) => {
   if (req.mode === 'navigate' || accept.includes('text/html')) {
     event.respondWith(
       fetch(req)
-        .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
-          return res;
-        })
+        .then((res) => res)
         .catch(() => caches.match(req).then((m) => m || caches.match('/')))
     );
     return;

@@ -40,8 +40,7 @@ export function InstallAppButton({
   const [iosOpen, setIosOpen] = useState(false);
   const [androidOpen, setAndroidOpen] = useState(false);
 
-  if (Platform.OS !== 'web') return null;
-  if (isStandalone) return null;
+  if (!alwaysShow && isStandalone) return null;
   if (!alwaysShow && !canInstall && !isIOS) return null;
 
   const onPress = async () => {
@@ -308,6 +307,9 @@ function IOSHelpModal({ visible, onClose }: { visible: boolean; onClose: () => v
 
 const styles = StyleSheet.create({
   banner: {
+    alignSelf: 'stretch',
+    width: '100%',
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -350,6 +352,9 @@ const styles = StyleSheet.create({
   inlineText: { fontSize: 13.5, fontWeight: '700' },
 
   cardWrap: {
+    alignSelf: 'stretch',
+    width: '100%',
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,

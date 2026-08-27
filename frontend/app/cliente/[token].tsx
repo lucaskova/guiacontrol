@@ -201,10 +201,21 @@ export default function ClientePortalScreen() {
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#1E40AF" />
-        <Text style={styles.muted}>Carregando…</Text>
-      </View>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.installSticky}>
+          <InstallAppButton
+            variant="banner"
+            label="Instalar Minhas Guias"
+            subtitle="Toque para adicionar à tela inicial"
+            color="#0F766E"
+            alwaysShow
+          />
+        </View>
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#1E40AF" />
+          <Text style={styles.muted}>Carregando…</Text>
+        </View>
+      </SafeAreaView>
     );
   }
 
@@ -221,6 +232,15 @@ export default function ClientePortalScreen() {
           )}
           <Text style={styles.headerTitle}>GuiaControl</Text>
           <View style={{ width: 40 }} />
+        </View>
+        <View style={styles.installSticky}>
+          <InstallAppButton
+            variant="banner"
+            label="Instalar Minhas Guias"
+            subtitle="Toque para adicionar à tela inicial"
+            color="#0F766E"
+            alwaysShow
+          />
         </View>
         <View style={styles.center}>
           <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
@@ -243,9 +263,13 @@ export default function ClientePortalScreen() {
           <View style={{ width: 40 }} />
         )}
         <Text style={styles.headerTitle}>Minhas guias</Text>
+        <View style={{ width: 40 }} />
+      </View>
+      <View style={styles.installSticky}>
         <InstallAppButton
-          variant="pill"
-          label="Instalar"
+          variant="banner"
+          label="Instalar Minhas Guias"
+          subtitle="Toque para adicionar à tela inicial"
           color="#0F766E"
           alwaysShow
         />
@@ -255,13 +279,6 @@ export default function ClientePortalScreen() {
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1E40AF" />}
       >
-        <InstallAppButton
-          variant="banner"
-          label="Instalar Minhas Guias"
-          subtitle="Toque para adicionar à tela inicial (PWA)"
-          color="#0F766E"
-          alwaysShow
-        />
         <View style={styles.hero}>
           <View style={styles.heroBadge}>
             <Ionicons name="wallet" size={14} color={premium.primary} />
@@ -575,6 +592,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#111827', flex: 1, textAlign: 'center' },
+  installSticky: {
+    width: '100%',
+    alignSelf: 'stretch',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
+    backgroundColor: '#F3F4F6',
+  },
   scrollContent: { padding: 16, paddingBottom: 40 },
   hero: {
     backgroundColor: '#1E3A8A',
