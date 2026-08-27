@@ -281,8 +281,9 @@ export default function ClientePortalScreen() {
           <View style={styles.installSlot}>
             <InstallAppButton
               label="Instalar como app"
-              subtitle="Acesse mais rápido pela tela inicial"
+              subtitle="Acesse suas guias direto da tela inicial do celular"
               color="#1E40AF"
+              alwaysShow
             />
           </View>
         </View>

@@ -33,17 +33,20 @@ export default function NotificacoesScreen() {
   const [qrUri, setQrUri] = useState<string | null>(null);
   const [conectandoWhatsapp, setConectandoWhatsapp] = useState(false);
   const [pollingWhatsapp, setPollingWhatsapp] = useState(false);
+  const [diagnostico, setDiagnostico] = useState<any>(null);
 
   const loadData = async () => {
     try {
-      const [notifRes, statusRes, empRes] = await Promise.all([
+      const [notifRes, statusRes, empRes, diagRes] = await Promise.all([
         notificacoesAPI.listar({ limit: 50 }),
         notificacoesAPI.statusWhatsApp().catch(() => ({ data: { conectado: false } })),
         empresasAPI.listar().catch(() => ({ data: [] })),
+        notificacoesAPI.diagnostico().catch(() => ({ data: null })),
       ]);
       setNotificacoes(notifRes.data);
       setWhatsappStatus(statusRes.data);
       setEmpresas(empRes.data || []);
+      setDiagnostico(diagRes.data);
     } catch (error) {
       console.error('Erro:', error);
     } finally {
@@ -128,10 +131,15 @@ export default function NotificacoesScreen() {
     setExecutandoJob(true);
     try {
       const res = await notificacoesAPI.executarJob();
-      const r = res.data.resultados;
+      const r = res.data.resultados || {};
+      const total =
+        (r.lembre_d7 || 0) +
+        (r.lembre_d3 || 0) +
+        (r.lembre_d0 || 0) +
+        (r.pos_vencimento || 0);
       showToast(
-        `Job executado: ${r.notificacoes_enviadas} enviada(s), ${r.vencidas} vencida(s), ${r.a_vencer_d2} a vencer`,
-        r.notificacoes_enviadas > 0 ? 'success' : 'info'
+        `Job executado: ${total} lembrete(s) enfileirado(s) (D-7: ${r.lembre_d7 || 0}, D-3: ${r.lembre_d3 || 0}, hoje: ${r.lembre_d0 || 0}, atraso: ${r.pos_vencimento || 0})`,
+        total > 0 ? 'success' : 'info'
       );
       loadData();
     } catch (error) {
@@ -264,10 +272,53 @@ export default function NotificacoesScreen() {
               <Text style={styles.hintText}>Quando uma chave SendGrid for configurada, os emails serão enviados de verdade.</Text>
             </View>
 
+            {/* Diagnóstico do sistema */}
+            {diagnostico && (
+              <View style={styles.card}>
+                <Text style={styles.sectionTitle}>DIAGNÓSTICO DO SISTEMA</Text>
+                <Text style={styles.hintText}>
+                  Referência: {diagnostico.data_referencia} · Cron diário às {diagnostico.infra?.cron_horario?.split('(')[0]?.trim() || '08:00 BRT'}
+                </Text>
+                <View style={styles.diagGrid}>
+                  <View style={styles.diagItem}>
+                    <Text style={styles.diagLabel}>Lembretes hoje</Text>
+                    <Text style={styles.diagValue}>{diagnostico.preview_hoje?.total_hoje ?? 0}</Text>
+                  </View>
+                  <View style={styles.diagItem}>
+                    <Text style={styles.diagLabel}>Taxa de sucesso</Text>
+                    <Text style={styles.diagValue}>{diagnostico.communication?.success_rate_pct ?? 0}%</Text>
+                  </View>
+                  <View style={styles.diagItem}>
+                    <Text style={styles.diagLabel}>Fila</Text>
+                    <Text style={styles.diagValue}>{diagnostico.communication?.queue_backend || '—'}</Text>
+                  </View>
+                  <View style={styles.diagItem}>
+                    <Text style={styles.diagLabel}>Na fila agora</Text>
+                    <Text style={styles.diagValue}>{diagnostico.communication?.queue_stats?.pending ?? 0}</Text>
+                  </View>
+                </View>
+                <Text style={styles.hintText}>
+                  Preview: D-7 {diagnostico.preview_hoje?.lembre_d7 ?? 0} · D-3 {diagnostico.preview_hoje?.lembre_d3 ?? 0} · hoje {diagnostico.preview_hoje?.lembre_d0 ?? 0} · atraso {diagnostico.preview_hoje?.pos_vencimento ?? 0}
+                </Text>
+                <View style={styles.statusRow}>
+                  <View style={[styles.statusDot, { backgroundColor: diagnostico.infra?.cron_secret_configurado ? '#059669' : '#D97706' }]} />
+                  <Text style={styles.statusText}>
+                    Cron automático {diagnostico.infra?.cron_secret_configurado ? 'configurado' : 'sem CRON_SECRET no servidor'}
+                  </Text>
+                </View>
+                <View style={styles.statusRow}>
+                  <View style={[styles.statusDot, { backgroundColor: diagnostico.infra?.redis_configurado ? '#059669' : '#D97706' }]} />
+                  <Text style={styles.statusText}>
+                    Redis {diagnostico.infra?.redis_configurado ? 'ativo (fila persistente)' : 'não configurado (fila em memória)'}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {/* Job Manual */}
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>JOB DIÁRIO</Text>
-              <Text style={styles.hintText}>Verifica guias vencidas e a vencer (D-2) e envia notificações automáticas para as empresas que têm WhatsApp ou email cadastrado.</Text>
+              <Text style={styles.hintText}>Verifica guias e enfileira lembretes automáticos (D-7, D-3, no vencimento e após atraso) para empresas com WhatsApp ou e-mail cadastrado.</Text>
               <TouchableOpacity
                 style={[styles.jobBtn, executandoJob && { opacity: 0.5 }]}
                 onPress={handleExecutarJob}
@@ -285,12 +336,20 @@ export default function NotificacoesScreen() {
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>COMO FUNCIONA</Text>
               <View style={styles.infoItem}>
-                <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                <Text style={styles.infoText}>Guia vencida → Notificação imediata</Text>
+                <Ionicons name="calendar-outline" size={18} color="#1E40AF" />
+                <Text style={styles.infoText}>7 dias antes → Lembrete D-7</Text>
+              </View>
+              <View style={styles.infoItem}>
+                <Ionicons name="calendar-outline" size={18} color="#1E40AF" />
+                <Text style={styles.infoText}>3 dias antes → Lembrete D-3</Text>
               </View>
               <View style={styles.infoItem}>
                 <Ionicons name="time" size={18} color="#D97706" />
-                <Text style={styles.infoText}>Guia vence em 2 dias → Lembrete</Text>
+                <Text style={styles.infoText}>No vencimento → Lembrete D-0</Text>
+              </View>
+              <View style={styles.infoItem}>
+                <Ionicons name="alert-circle" size={18} color="#DC2626" />
+                <Text style={styles.infoText}>Após vencer → 1 lembrete por dia</Text>
               </View>
               <View style={styles.infoItem}>
                 <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
@@ -544,6 +603,10 @@ const styles = StyleSheet.create({
   empresaBadges: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   channelBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, gap: 3 },
   channelBadgeText: { fontSize: 10, fontWeight: '700' },
+  diagGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  diagItem: { width: '47%', backgroundColor: '#F8FAFC', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#EEF2F7' },
+  diagLabel: { fontSize: 11, color: '#6B7280', marginBottom: 4 },
+  diagValue: { fontSize: 18, fontWeight: '800', color: '#111827' },
   modalOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20, zIndex: 100 },
   modalContent: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 24, width: '100%', maxWidth: 340 },
   modalTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginBottom: 6 },

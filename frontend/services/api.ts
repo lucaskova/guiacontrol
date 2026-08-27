@@ -196,6 +196,7 @@ export const notificacoesAPI = {
   enviarTeste: (data: { telefone: string; mensagem?: string }) =>
     api.post('/notificacoes/enviar-teste', data),
   executarJob: () => api.post('/notificacoes/executar-job'),
+  diagnostico: () => api.get('/notificacoes/diagnostico'),
   /** Status do WhatsApp (APIBrasil). Mantém alias statusZAPI para compatibilidade. */
   statusWhatsApp: () => api.get('/notificacoes/status-whatsapp'),
   statusZAPI: () => api.get('/notificacoes/status-whatsapp'),

@@ -20,6 +20,8 @@ type Props = {
   color?: string;
   /** Subtítulo para variant="card". */
   subtitle?: string;
+  /** Mostra no portal do cliente mesmo antes do prompt nativo (iOS/Android). */
+  alwaysShow?: boolean;
 };
 
 /**
@@ -32,23 +34,32 @@ export function InstallAppButton({
   label = 'Instalar app',
   color = '#6D28D9',
   subtitle = 'Use offline e abra direto da tela inicial',
+  alwaysShow = false,
 }: Props) {
   const { canInstall, isStandalone, isIOS, install } = useInstallApp();
   const [iosOpen, setIosOpen] = useState(false);
+  const [androidOpen, setAndroidOpen] = useState(false);
 
   if (Platform.OS !== 'web') return null;
   if (isStandalone) return null;
 
   const showIOSHelp = isIOS && !canInstall;
+  const showAndroidHelp = !isIOS && !canInstall && alwaysShow;
 
-  if (!canInstall && !showIOSHelp) return null;
+  if (!canInstall && !showIOSHelp && !showAndroidHelp) return null;
 
   const onPress = async () => {
+    if (canInstall) {
+      await install();
+      return;
+    }
     if (showIOSHelp) {
       setIosOpen(true);
       return;
     }
-    await install();
+    if (showAndroidHelp) {
+      setAndroidOpen(true);
+    }
   };
 
   const tone = { backgroundColor: color };
@@ -65,6 +76,7 @@ export function InstallAppButton({
           <Text style={styles.pillText}>{label}</Text>
         </TouchableOpacity>
         <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
+        <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
       </>
     );
   }
@@ -81,6 +93,7 @@ export function InstallAppButton({
           <Text style={[styles.inlineText, { color }]}>{label}</Text>
         </TouchableOpacity>
         <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
+        <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
       </>
     );
   }
@@ -101,7 +114,73 @@ export function InstallAppButton({
         </View>
       </TouchableOpacity>
       <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
+      <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
     </>
+  );
+}
+
+function AndroidHelpModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.overlay} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.sheetHeader}>
+            <View style={[styles.sheetIcon, { backgroundColor: '#059669' }]}>
+              <Ionicons name="logo-android" size={20} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sheetTitle}>Instalar no Android</Text>
+              <Text style={styles.sheetSub}>Chrome ou Samsung Internet</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={10}>
+              <Ionicons name="close" size={22} color="#6B7280" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.step}>
+            <View style={styles.stepNum}>
+              <Text style={styles.stepNumText}>1</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.stepTitle}>Abra o menu do navegador</Text>
+              <Text style={styles.stepDesc}>Três pontos no canto superior direito</Text>
+            </View>
+            <Ionicons name="ellipsis-vertical" size={22} color="#059669" />
+          </View>
+
+          <View style={styles.step}>
+            <View style={styles.stepNum}>
+              <Text style={styles.stepNumText}>2</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.stepTitle}>Instalar app ou Adicionar à tela inicial</Text>
+              <Text style={styles.stepDesc}>O nome pode variar conforme o navegador</Text>
+            </View>
+            <Ionicons name="download-outline" size={22} color="#059669" />
+          </View>
+
+          <View style={styles.step}>
+            <View style={styles.stepNum}>
+              <Text style={styles.stepNumText}>3</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.stepTitle}>Confirme a instalação</Text>
+              <Text style={styles.stepDesc}>O ícone &quot;Minhas Guias&quot; aparece na tela inicial</Text>
+            </View>
+            <Ionicons name="checkmark-circle" size={22} color="#059669" />
+          </View>
+
+          <TouchableOpacity onPress={onClose} style={[styles.sheetButton, { backgroundColor: '#059669' }]} activeOpacity={0.85}>
+            <Text style={styles.sheetButtonText}>Entendi</Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 

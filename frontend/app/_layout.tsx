@@ -1,12 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import { useAuthStore } from '../store/authStore';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { ToastProvider } from '../contexts/ToastContext';
 import { setupPWA } from '../utils/pwa';
 
+function isClientePortalPath(pathname?: string | null): boolean {
+  if (!pathname) return false;
+  return pathname.startsWith('/cliente/') && pathname.length > '/cliente/'.length;
+}
+
 export default function RootLayout() {
-  const [initializing, setInitializing] = useState(true);
+  const pathname = usePathname();
+  const isClientePortal = isClientePortalPath(pathname);
+  const [initializing, setInitializing] = useState(!isClientePortal);
   const isLoading = useAuthStore((state) => state.isLoading);
   const loadUser = useAuthStore((state) => state.loadUser);
 
@@ -15,6 +22,11 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
+    if (isClientePortal) {
+      setInitializing(false);
+      return;
+    }
+
     const init = async () => {
       try {
         await loadUser();
@@ -24,11 +36,11 @@ export default function RootLayout() {
         setInitializing(false);
       }
     };
-    
-    init();
-  }, [loadUser]);
 
-  if (initializing || isLoading) {
+    init();
+  }, [isClientePortal, loadUser]);
+
+  if (!isClientePortal && (initializing || isLoading)) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
         <ActivityIndicator size="large" color="#3B82F6" />

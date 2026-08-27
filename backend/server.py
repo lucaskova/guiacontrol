@@ -1054,12 +1054,118 @@ async def verificar_e_notificar_guias(user_id: Optional[str] = None):
     return resultados
 
 
+async def _preview_lembretes(user_id: Optional[str] = None) -> dict:
+    """Conta guias que disparariam lembretes hoje, sem enfileirar."""
+    tz_br = ZoneInfo("America/Sao_Paulo")
+    hoje_date = datetime.now(tz_br).date()
+
+    preview = {
+        "lembre_d7": 0,
+        "lembre_d3": 0,
+        "lembre_d0": 0,
+        "pos_vencimento": 0,
+        "ignoradas_sem_contato": 0,
+        "ignoradas_notif_desativada": 0,
+    }
+
+    query_base: dict = {"status": {"$ne": "paga"}}
+    if user_id:
+        query_base["user_id"] = user_id
+
+    guias = await db.guias.find(query_base).to_list(length=5000)
+
+    for guia in guias:
+        venc_date = _parse_vencimento_para_date(str(guia.get("data_vencimento", "")))
+        if not venc_date:
+            continue
+
+        empresa = await db.empresas.find_one({"empresa_id": guia.get("empresa_id", "")})
+        if not empresa or empresa.get("notificacoes_ativas") is False:
+            preview["ignoradas_notif_desativada"] += 1
+            continue
+
+        whatsapp = empresa.get("whatsapp") or empresa.get("telefone")
+        email = empresa.get("email")
+        if not whatsapp and not email:
+            preview["ignoradas_sem_contato"] += 1
+            continue
+
+        days_until = (venc_date - hoje_date).days
+        if days_until == 7:
+            preview["lembre_d7"] += 1
+        elif days_until == 3:
+            preview["lembre_d3"] += 1
+        elif days_until == 0:
+            preview["lembre_d0"] += 1
+        elif days_until < 0:
+            preview["pos_vencimento"] += 1
+
+    preview["total_hoje"] = (
+        preview["lembre_d7"]
+        + preview["lembre_d3"]
+        + preview["lembre_d0"]
+        + preview["pos_vencimento"]
+    )
+    return preview
+
+
+async def _diagnostico_notificacoes(user_id: str) -> dict:
+    """Painel de saúde dos lembretes automáticos para o contador."""
+    whatsapp = await _status_whatsapp_contador(user_id)
+
+    comm: dict = {"ok": False}
+    try:
+        center = get_center()
+        dash = await center.dashboard(user_id)
+        from communication.queue.client import get_queue
+        from communication.providers.factory import get_communication_provider
+
+        queue = await get_queue()
+        provider = get_communication_provider()
+        comm = {
+            "ok": True,
+            "queue_backend": queue.backend,
+            "queue_stats": await queue.stats(),
+            "provider": provider.name,
+            "provider_configured": getattr(provider, "configured", lambda: True)(),
+            "events_by_status": dash.get("events_by_status", {}),
+            "success_rate_pct": dash.get("success_rate", 0),
+            "recent_logs": dash.get("recent_logs", [])[:5],
+        }
+    except Exception as e:
+        comm = {"ok": False, "erro": str(e)}
+
+    preview = await _preview_lembretes(user_id)
+
+    cron_ok = bool(os.getenv("CRON_SECRET", "").strip())
+    redis_ok = bool(os.getenv("REDIS_URL", "").strip())
+
+    return {
+        "data_referencia": datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d"),
+        "whatsapp": whatsapp,
+        "communication": comm,
+        "preview_hoje": preview,
+        "infra": {
+            "cron_secret_configurado": cron_ok,
+            "redis_configurado": redis_ok,
+            "cron_horario": "08:00 America/Sao_Paulo (GitHub Actions 11:00 UTC)",
+            "janela_envio": "08:00–18:00 America/Sao_Paulo",
+        },
+        "lembretes": {
+            "d7": "7 dias antes do vencimento",
+            "d3": "3 dias antes",
+            "d0": "no dia do vencimento",
+            "pos_vencimento": "após vencer (1x por dia)",
+        },
+    }
+
+
 def calcular_status_guia(data_vencimento: str, status_atual: str) -> str:
     """Calcula o status da guia baseado na data de vencimento"""
     if status_atual == "paga":
         return "paga"
-    
-    hoje = datetime.now().date()
+
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
     
     # Tentar parsear a data em diferentes formatos
     vencimento = None
@@ -2774,6 +2880,16 @@ async def enviar_notificacao_teste(
         "mensagem": "Mensagem de teste enviada para a fila — deve chegar em segundos no WhatsApp.",
         "detalhes": resultado,
     }
+
+
+@api_router.get("/notificacoes/diagnostico")
+async def diagnostico_notificacoes(
+    session_token: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Resumo de saúde dos lembretes automáticos (WhatsApp, fila, preview do dia)."""
+    user = await get_current_user(session_token, authorization)
+    return await _diagnostico_notificacoes(user["user_id"])
 
 
 @api_router.post("/notificacoes/executar-job")
