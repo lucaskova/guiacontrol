@@ -243,13 +243,25 @@ export default function ClientePortalScreen() {
           <View style={{ width: 40 }} />
         )}
         <Text style={styles.headerTitle}>Minhas guias</Text>
-        <View style={{ width: 40 }} />
+        <InstallAppButton
+          variant="pill"
+          label="Instalar"
+          color="#0F766E"
+          alwaysShow
+        />
       </View>
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1E40AF" />}
       >
+        <InstallAppButton
+          variant="banner"
+          label="Instalar Minhas Guias"
+          subtitle="Toque para adicionar à tela inicial (PWA)"
+          color="#0F766E"
+          alwaysShow
+        />
         <View style={styles.hero}>
           <View style={styles.heroBadge}>
             <Ionicons name="wallet" size={14} color={premium.primary} />
@@ -280,6 +292,7 @@ export default function ClientePortalScreen() {
 
           <View style={styles.installSlot}>
             <InstallAppButton
+              variant="card"
               label="Instalar como app"
               subtitle="Acesse suas guias direto da tela inicial do celular"
               color="#1E40AF"
@@ -561,7 +574,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: '#111827' },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: '#111827', flex: 1, textAlign: 'center' },
   scrollContent: { padding: 16, paddingBottom: 40 },
   hero: {
     backgroundColor: '#1E3A8A',

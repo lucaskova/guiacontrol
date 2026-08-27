@@ -2156,6 +2156,48 @@ async def public_portal_cliente(portal_token: str):
     }
 
 
+@api_router.get("/public/cliente/{portal_token}/pwa-manifest")
+async def public_portal_pwa_manifest(portal_token: str):
+    """Manifest PWA do portal (mesma origem via proxy /api) — necessário para beforeinstallprompt no Android."""
+    if not portal_token or len(portal_token) < 12:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    empresa = await db.empresas.find_one({"portal_token": portal_token}, {"_id": 1})
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Link inválido")
+
+    from communication.portal import portal_base_url
+
+    base = portal_base_url().rstrip("/")
+    start = f"{base}/cliente/{portal_token}"
+    icon_192 = f"{base}/icon-192.png"
+    icon_512 = f"{base}/icon-512.png"
+    icon_mask = f"{base}/icon-maskable-512.png"
+    body = {
+        "id": start,
+        "name": "Minhas Guias — GuiaControl",
+        "short_name": "Minhas Guias",
+        "description": "Suas guias fiscais — acesse, pague e envie comprovantes.",
+        "start_url": start,
+        "scope": f"{base}/cliente/",
+        "display": "standalone",
+        "orientation": "portrait",
+        "background_color": "#FFFFFF",
+        "theme_color": "#0F766E",
+        "lang": "pt-BR",
+        "prefer_related_applications": False,
+        "icons": [
+            {"src": icon_192, "type": "image/png", "sizes": "192x192", "purpose": "any"},
+            {"src": icon_512, "type": "image/png", "sizes": "512x512", "purpose": "any"},
+            {"src": icon_mask, "type": "image/png", "sizes": "512x512", "purpose": "maskable"},
+        ],
+    }
+    return Response(
+        content=json.dumps(body, ensure_ascii=False),
+        media_type="application/manifest+json; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 @api_router.post("/public/cliente/{portal_token}/guias/{guia_id}/marcar-paga")
 async def public_portal_marcar_guia_paga(
     portal_token: str,

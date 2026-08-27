@@ -12,34 +12,23 @@ import type { PropsWithChildren } from 'react';
 const PWA_BOOTSTRAP = `
 (function () {
   try {
+    window.__pwaInstall = window.__pwaInstall || { deferred: null };
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      window.__pwaInstall.deferred = e;
+      try { window.dispatchEvent(new Event('pwa-install-available')); } catch (err) {}
+    });
+
     var p = window.location.pathname || '/';
     var isCliente = p.indexOf('/cliente/') === 0;
 
     if (isCliente) {
-      var parts = p.split('/').filter(Boolean); // ['cliente', '<token>']
+      var parts = p.split('/').filter(Boolean);
       var token = parts[1] || '';
-      var manifest = {
-        name: 'Minhas Guias — GuiaControl',
-        short_name: 'Minhas Guias',
-        description: 'Suas guias fiscais — acesse, pague e envie comprovantes.',
-        start_url: '/cliente/' + token,
-        scope: '/cliente/',
-        display: 'standalone',
-        orientation: 'portrait',
-        background_color: '#FFFFFF',
-        theme_color: '#0F766E',
-        lang: 'pt-BR',
-        icons: [
-          { src: '/icon.svg', type: 'image/svg+xml', sizes: 'any', purpose: 'any' },
-          { src: '/icon-192.png', type: 'image/png', sizes: '192x192', purpose: 'any' },
-          { src: '/icon-512.png', type: 'image/png', sizes: '512x512', purpose: 'any' },
-          { src: '/icon-maskable-512.png', type: 'image/png', sizes: '512x512', purpose: 'maskable' }
-        ]
-      };
-      var blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-      var url = URL.createObjectURL(blob);
       var link = document.getElementById('app-manifest');
-      if (link) link.setAttribute('href', url);
+      if (link && token) {
+        link.setAttribute('href', '/api/public/cliente/' + encodeURIComponent(token) + '/pwa-manifest');
+      }
       document.title = 'Minhas Guias';
     }
 

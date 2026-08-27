@@ -1,5 +1,5 @@
 /* GuiaControl Service Worker — versão simples (offline shell) */
-const CACHE = 'guiacontrol-shell-v1';
+const CACHE = 'guiacontrol-shell-v2';
 const PRECACHE = [
   '/',
   '/manifest.webmanifest',

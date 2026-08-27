@@ -18,8 +18,8 @@ export default function RootLayout() {
   const loadUser = useAuthStore((state) => state.loadUser);
 
   useEffect(() => {
-    setupPWA();
-  }, []);
+    setupPWA(pathname);
+  }, [pathname]);
 
   useEffect(() => {
     if (isClientePortal) {

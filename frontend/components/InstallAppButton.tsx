@@ -11,7 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useInstallApp } from '../hooks/useInstallApp';
 
-type Variant = 'card' | 'pill' | 'inline';
+type Variant = 'card' | 'pill' | 'inline' | 'banner';
 
 type Props = {
   variant?: Variant;
@@ -36,33 +36,52 @@ export function InstallAppButton({
   subtitle = 'Use offline e abra direto da tela inicial',
   alwaysShow = false,
 }: Props) {
-  const { canInstall, isStandalone, isIOS, install } = useInstallApp();
+  const { canInstall, isStandalone, isIOS, inAppBrowser, install, openInChrome } = useInstallApp();
   const [iosOpen, setIosOpen] = useState(false);
   const [androidOpen, setAndroidOpen] = useState(false);
 
   if (Platform.OS !== 'web') return null;
   if (isStandalone) return null;
-
-  const showIOSHelp = isIOS && !canInstall;
-  const showAndroidHelp = !isIOS && !canInstall && alwaysShow;
-
-  if (!canInstall && !showIOSHelp && !showAndroidHelp) return null;
+  if (!alwaysShow && !canInstall && !isIOS) return null;
 
   const onPress = async () => {
-    if (canInstall) {
-      await install();
+    const result = await install();
+    if (result.outcome === 'accepted') return;
+    if (inAppBrowser && !isIOS) {
+      openInChrome();
       return;
     }
-    if (showIOSHelp) {
+    if (isIOS) {
       setIosOpen(true);
       return;
     }
-    if (showAndroidHelp) {
-      setAndroidOpen(true);
-    }
+    setAndroidOpen(true);
   };
 
   const tone = { backgroundColor: color };
+  const ctaLabel = canInstall ? 'Instalar' : inAppBrowser && !isIOS ? 'Abrir no Chrome' : 'Instalar';
+
+  if (variant === 'banner') {
+    return (
+      <>
+        <TouchableOpacity onPress={onPress} activeOpacity={0.88} style={[styles.banner, { backgroundColor: color }]}>
+          <Ionicons name="download-outline" size={22} color="#FFFFFF" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.bannerTitle}>{label}</Text>
+            <Text style={styles.bannerSub}>{subtitle}</Text>
+          </View>
+          <Text style={styles.bannerCta}>{ctaLabel}</Text>
+        </TouchableOpacity>
+        <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
+        <AndroidHelpModal
+          visible={androidOpen}
+          onClose={() => setAndroidOpen(false)}
+          inApp={inAppBrowser}
+          onOpenChrome={openInChrome}
+        />
+      </>
+    );
+  }
 
   if (variant === 'pill') {
     return (
@@ -73,10 +92,15 @@ export function InstallAppButton({
           style={[styles.pill, tone]}
         >
           <Ionicons name="download-outline" size={15} color="#FFFFFF" />
-          <Text style={styles.pillText}>{label}</Text>
+          <Text style={styles.pillText}>{ctaLabel}</Text>
         </TouchableOpacity>
         <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
-        <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
+        <AndroidHelpModal
+          visible={androidOpen}
+          onClose={() => setAndroidOpen(false)}
+          inApp={inAppBrowser}
+          onOpenChrome={openInChrome}
+        />
       </>
     );
   }
@@ -93,7 +117,12 @@ export function InstallAppButton({
           <Text style={[styles.inlineText, { color }]}>{label}</Text>
         </TouchableOpacity>
         <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
-        <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
+        <AndroidHelpModal
+          visible={androidOpen}
+          onClose={() => setAndroidOpen(false)}
+          inApp={inAppBrowser}
+          onOpenChrome={openInChrome}
+        />
       </>
     );
   }
@@ -110,16 +139,31 @@ export function InstallAppButton({
         </View>
         <View style={[styles.cardCta, { backgroundColor: color }]}>
           <Ionicons name="download-outline" size={14} color="#FFFFFF" />
-          <Text style={styles.cardCtaText}>Instalar</Text>
+          <Text style={styles.cardCtaText}>{ctaLabel}</Text>
         </View>
       </TouchableOpacity>
       <IOSHelpModal visible={iosOpen} onClose={() => setIosOpen(false)} />
-      <AndroidHelpModal visible={androidOpen} onClose={() => setAndroidOpen(false)} />
+      <AndroidHelpModal
+        visible={androidOpen}
+        onClose={() => setAndroidOpen(false)}
+        inApp={inAppBrowser}
+        onOpenChrome={openInChrome}
+      />
     </>
   );
 }
 
-function AndroidHelpModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+function AndroidHelpModal({
+  visible,
+  onClose,
+  inApp,
+  onOpenChrome,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  inApp?: boolean;
+  onOpenChrome?: () => void;
+}) {
   return (
     <Modal
       transparent
@@ -175,9 +219,22 @@ function AndroidHelpModal({ visible, onClose }: { visible: boolean; onClose: () 
             <Ionicons name="checkmark-circle" size={22} color="#059669" />
           </View>
 
-          <TouchableOpacity onPress={onClose} style={[styles.sheetButton, { backgroundColor: '#059669' }]} activeOpacity={0.85}>
-            <Text style={styles.sheetButtonText}>Entendi</Text>
-          </TouchableOpacity>
+          {inApp && onOpenChrome ? (
+            <TouchableOpacity
+              onPress={() => {
+                onOpenChrome();
+                onClose();
+              }}
+              style={[styles.sheetButton, { backgroundColor: '#059669' }]}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.sheetButtonText}>Abrir no Chrome para instalar</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={onClose} style={[styles.sheetButton, { backgroundColor: '#059669' }]} activeOpacity={0.85}>
+              <Text style={styles.sheetButtonText}>Entendi</Text>
+            </TouchableOpacity>
+          )}
         </Pressable>
       </Pressable>
     </Modal>
@@ -250,6 +307,27 @@ function IOSHelpModal({ visible, onClose }: { visible: boolean; onClose: () => v
 }
 
 const styles = StyleSheet.create({
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    marginBottom: 12,
+  },
+  bannerTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+  bannerSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, marginTop: 2 },
+  bannerCta: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    backgroundColor: 'rgba(0,0,0,0.18)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
